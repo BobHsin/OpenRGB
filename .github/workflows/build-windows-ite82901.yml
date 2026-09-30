@@ -1,0 +1,87 @@
+#-----------------------------------------------------------#
+# OpenRGB Windows 64-bit build (with ITE 82901 controller)  #
+#                                                           #
+# Mirrors the official build (scripts/build-windows.bat):   #
+#   Qt 6.8.3 + MSVC 2022 x64, qmake + jom, windeployqt      #
+#                                                           #
+# Run manually from the Actions tab, or on every push.      #
+# Result: "OpenRGB_Windows_64_ITE82901" artifact (zip).     #
+#-----------------------------------------------------------#
+name: Build OpenRGB Windows 64 (ITE82901)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check ITE82901 files are present
+        shell: pwsh
+        run: |
+          $files = @(
+            "Controllers/ITE82901Controller/ITE82901ControllerDetect_Windows.cpp",
+            "Controllers/ITE82901Controller/ITE82901Controller_Windows.cpp",
+            "Controllers/ITE82901Controller/ITEI2CBridge_Windows.cpp",
+            "Controllers/ITE82901Controller/RGBController_ITE82901_Windows.cpp",
+            "dependencies/ITEI2CBridge/x64/ITEI2CBridge.dll"
+          )
+          $missing = $files | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            Write-Error ("Missing files (upload them to the repo first):`n" + ($missing -join "`n"))
+            exit 1
+          }
+          Write-Host "All ITE82901 files found."
+
+      - name: Install Qt 6.8.3 (MSVC 2022 64-bit)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          cache: true
+
+      - name: Set up MSVC 2022 x64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install jom (parallel make)
+        shell: pwsh
+        run: choco install jom -y --no-progress
+
+      - name: Configure (qmake)
+        shell: cmd
+        run: qmake OpenRGB.pro CONFIG-=debug_and_release CONFIG+=release
+
+      - name: Build (jom)
+        shell: cmd
+        run: jom
+
+      - name: Deploy Qt DLLs (windeployqt)
+        shell: cmd
+        run: windeployqt --no-quick-import --no-translations --no-system-d3d-compiler --no-compiler-runtime --no-opengl-sw --no-network .\release\
+
+      - name: Add ITEI2CBridge.dll and package
+        shell: pwsh
+        run: |
+          Copy-Item "dependencies\ITEI2CBridge\x64\ITEI2CBridge.dll" "release\" -Force
+          if (-not (Test-Path "release\OpenRGB.exe")) { Write-Error "OpenRGB.exe was not built"; exit 1 }
+          Remove-Item "release\*.qm" -ErrorAction SilentlyContinue
+          Rename-Item "release" "OpenRGB Windows 64-bit"
+          Get-ChildItem "OpenRGB Windows 64-bit" | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenRGB_Windows_64_ITE82901
+          path: OpenRGB Windows 64-bit
+          retention-days: 30
