@@ -74,6 +74,19 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "dependencies\ITEI2CBridge\x64\ITEI2CBridge.dll" "release\" -Force
+
+          # Bundle the MSVC runtime (MSVCP140.dll, VCRUNTIME140.dll, ...) next to
+          # OpenRGB.exe so no VC++ Redistributable install is needed on the target PC
+          $crt = $null
+          if ($env:VCToolsRedistDir) {
+            $crt = Get-ChildItem (Join-Path $env:VCToolsRedistDir "x64") -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $crt) {
+            $crt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          }
+          if (-not $crt) { Write-Error "MSVC runtime redist folder not found"; exit 1 }
+          Write-Host "Copying MSVC runtime from $($crt.FullName)"
+          Copy-Item (Join-Path $crt.FullName "*.dll") "release\" -Force
           if (-not (Test-Path "release\OpenRGB.exe")) { Write-Error "OpenRGB.exe was not built"; exit 1 }
           Remove-Item "release\*.qm" -ErrorAction SilentlyContinue
           Rename-Item "release" "OpenRGB Windows 64-bit"
@@ -85,3 +98,4 @@ jobs:
           name: OpenRGB_Windows_64_ITE82901
           path: OpenRGB Windows 64-bit
           retention-days: 30
+
