@@ -1,16 +1,36 @@
 /*---------------------------------------------------------*\
 | ITE82901Controller_Windows.h                              |
 |                                                           |
-|   Driver for ITE 82901 LED controller over PCH I2C        |
-|   (via ITEI2CBridge.dll)                                  |
+|   Driver for ITE 82901 LED controller over PCH I2C,       |
+|   through the ITE SPB peripheral kernel driver (IOCTL)    |
 |                                                           |
 |   This file is part of the OpenRGB project                |
-|   SPDX-License-Identifier: GPL-2.0-or-later                   |
+|   SPDX-License-Identifier: GPL-2.0-or-later               |
 \*---------------------------------------------------------*/
 
 #pragma once
 
+#include <windows.h>
+#include <winioctl.h>
+#include <mutex>
 #include <string>
+#include <vector>
+
+/*---------------------------------------------------------*\
+| ITE SPB peripheral driver interface                       |
+|   Device path : \\.\<name><UID>   e.g. \\.\ITE8853_0       |
+|   IOCTL codes : same values as the driver's               |
+|                 spbtestioctl.h                            |
+\*---------------------------------------------------------*/
+#define ITE_SPB_FILE_DEVICE                 0x400
+
+#define ITE_SPB_IOCTL_OPEN                  CTL_CODE(ITE_SPB_FILE_DEVICE, 0x700, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define ITE_SPB_IOCTL_CLOSE                 CTL_CODE(ITE_SPB_FILE_DEVICE, 0x701, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define ITE_SPB_IOCTL_WRITEREAD             CTL_CODE(ITE_SPB_FILE_DEVICE, 0x704, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define ITE_SPB_MAX_TRANSFER                256     /* Driver buffer size           */
+#define ITE_SPB_IO_TIMEOUT_MS               1000    /* Per-transfer timeout         */
+#define ITE_SPB_IO_RETRIES                  50      /* Same as ITE reference DLL    */
 
 /*---------------------------------------------------------*\
 | Command index                                             |
@@ -39,17 +59,26 @@ enum
 class ITE82901Controller
 {
 public:
-    ITE82901Controller(std::string dev_name, int bus, int address, int speed_khz);
+    ITE82901Controller(std::string dev_name, std::string driver_name, int driver_uid);
     ~ITE82901Controller();
 
+    bool            Open();
+    bool            IsOpen();
     std::string     GetName();
     std::string     GetLocation();
 
     bool            SetPattern(unsigned char pattern);
+    bool            ProbeRead();
 
 private:
     std::string     name;
-    int             bus;
-    int             address;
-    int             speed_khz;
+    std::string     device_path;
+    HANDLE          dev_handle;
+    std::mutex      io_mutex;
+
+    bool            OpenLocked();
+    void            CloseLocked();
+    bool            Overlapped(int op, DWORD ioctl, void* in, DWORD in_len, void* out, DWORD out_len, DWORD* transferred);
+    bool            Write(const unsigned char* data, int len);
+    bool            Read(unsigned char* data, int len);
 };

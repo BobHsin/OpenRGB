@@ -17,9 +17,9 @@
     @direct :x:
     @effects :white_check_mark:
     @detectors DetectITE82901Controllers
-    @comment Uses ITEI2CBridge.dll (WinRT Windows.Devices.I2c) on the
-        PCH I2C controller. Bus index / slave address are configured in
-        OpenRGB.json under "ITE82901Devices". The protocol only exposes
+    @comment Uses the ITE SPB peripheral kernel driver (\\.\ITE8853_<UID>)
+        to reach the PCH I2C controller. The driver must be installed. Bus index / slave address are configured in
+        OpenRGB.json under "ITE82901Devices" (driver_name, uid). The protocol only exposes
         hardware patterns (command 0x22), no color or speed control.
 \*-------------------------------------------------------------------*/
 

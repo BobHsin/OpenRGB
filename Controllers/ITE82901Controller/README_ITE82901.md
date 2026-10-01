@@ -1,52 +1,54 @@
-# ITE 82901 OpenRGB 整合說明
+# ITE 82901 OpenRGB 驅動說明（ITE SPB driver 版）
 
-## 安裝步驟
+## 架構
 
-1. 把 zip 裡的 `Controllers\ITE82901Controller\` 和 `dependencies\ITEI2CBridge\` 複製到 OpenRGB 原始碼根目錄。**不要**覆蓋 `OpenRGB.pro`。
-2. 打開 `OpenRGB.pro`，搜尋 `LedsValve.bin`，在那一行（x86_64 區塊）的下一行加入：
+OpenRGB 透過 ITE 的 SPB peripheral kernel driver 傳送 I2C 封包，不需要 DLL，也不需要 MSFT8000。
 
-```
-    copydata.commands += $(COPY_FILE) \"$$shell_path($$PWD/dependencies/ITEI2CBridge/x64/ITEI2CBridge.dll          )\" \"$$shell_path($$DESTDIR)\" $$escape_expand(\n\t)
-```
+| 檔案 | 說明 |
+|---|---|
+| `ITE82901Controller_Windows.*` | 開啟 `\\.\<driver_name><uid>`，以 IOCTL / WriteFile / ReadFile 傳輸，並送出 82901 封包 `[0x22][pattern]` |
+| `RGBController_ITE82901_Windows.*` | OpenRGB UI 模式 |
+| `ITE82901ControllerDetect_Windows.cpp` | 從 `OpenRGB.json` 讀取 driver 名稱與 UID 建立裝置 |
 
-   （zip 裡的 `OpenRGB.pro.patch` 是同樣的修改。）
-3. 用 **MSVC 64-bit** Kit 建置。新版 OpenRGB 的 `.pro` 只在 MSVC 下才會連結 libusb / hidapi / mbedtls 並複製 DLL（`QMAKE_TARGET.arch` 只有 MSVC 會設定），MinGW 無法建置。
+與 ITE 參考 DLL 相同的呼叫流程：
 
-檔名帶 `_Windows` 後綴，OpenRGB.pro 會自動只在 Windows 編譯，不需要手動加進 SOURCES。
+1. `CreateFile("\\.\ITE8853_<UID>", GENERIC_READ|GENERIC_WRITE, 0, ..., FILE_FLAG_OVERLAPPED)`
+2. `IOCTL_SPBTESTTOOL_OPEN`（0x700）
+3. 寫入：`WriteFile`；讀取：`ReadFile`（最多重試 50 次）
+4. 結束：`IOCTL_SPBTESTTOOL_CLOSE`（0x701）+ `CloseHandle`
+
+改善的地方：
+
+- 每次傳輸最多等待 1 秒，driver 沒有回應時會取消 I/O，不會讓 OpenRGB 卡住
+- 所有傳輸以 mutex 保護，可安全地從多個執行緒呼叫
+- 寫入連續失敗後關閉 handle，下次使用時自動重新開啟（例如睡眠喚醒後）
+
+## 系統需求
+
+- ITE SPB peripheral driver 已安裝，且裝置管理員中可以看到對應裝置
+- I2C slave address 由 driver 的 ACPI 資源（BIOS 中的 I2cSerialBus）決定，OpenRGB 端不再設定位址
 
 ## 設定
 
-預設值已內建：**bus 0、7-bit slave address 0x68、100 kHz**，裝置會直接出現在 OpenRGB，不需要改任何設定。
-
-第一次執行時，OpenRGB 會把預設值寫進 `%APPDATA%\OpenRGB\OpenRGB.json`：
+第一次執行會寫入 `%APPDATA%\OpenRGB\OpenRGB.json`：
 
 ```json
 "ITE82901Devices": {
-    "dll": "ITEI2CBridge.dll",
     "devices": [
         {
             "enabled": true,
             "name": "ITE 82901",
-            "bus": 0,
-            "address": "0x68",
-            "speed_khz": 100,
+            "driver_name": "ITE8853_",
+            "uid": 0,
             "probe_read": false
         }
     ]
 }
 ```
 
-若之前跑過舊版而留下 `enabled:false / address "0x00"` 的範本，新版會自動把它升級成上面的預設值。
-
-之後若要修改（改完按 **Rescan Devices**）：
-
-- `bus`：WinRT 列舉到的第幾個 I2C controller（0 起算）
-- `address`：7-bit slave address，可寫 `"0x68"` 或十進位 `104`
-- `speed_khz`：`100` 或 `400`（DLL 只認 400 = Fast mode）
-- `probe_read`：`true` 時偵測階段讀 1 byte 確認 ACK；82901 若不支援讀取請保持 `false`
-- `enabled`：`false` 可停用
-
-程式內的預設值定義在 `ITE82901ControllerDetect_Windows.cpp` 的 `ITE82901_DEFAULT_BUS / ITE82901_DEFAULT_ADDR`。
+- `driver_name` + `uid` 組成裝置路徑，例如 `ITE8853_` + `0` → `\\.\ITE8853_0`
+- 舊版的 `bus`、`address`、`speed_khz` 欄位會被忽略
+- 找不到 driver 時不會註冊裝置，log 會顯示 `Could not open \\.\...`
 
 ## UI 模式對應
 
@@ -62,12 +64,12 @@
 | Color Cycle | `22 07` |
 | Wave | `22 08` |
 
-指令表沒有顏色/速度/亮度指令，所以這些模式在 UI 上不會出現顏色選擇器。
-
 ## 除錯
 
-Settings → General → 開啟 log（或 `OpenRGB.exe --loglevel 6`），搜尋 `[ITE82901]` / `[ITEI2CBridge]`：
+`OpenRGB.exe --loglevel 6`，搜尋 `[ITE82901]`：
 
-- `Failed to load ...ITEI2CBridge.dll`：DLL 沒放在 exe 旁邊
-- `initialdll(...) failed`：bus 索引超出範圍，或該 PCH I2C controller 沒有透過 ACPI/rhproxy 開放給 user-mode（WinRT I2C 的前提）
-- `Failed to write pattern`：位址錯誤或裝置沒有 ACK
+- `Could not open \\.\ITE8853_0 (error 2)`：找不到裝置，driver 未安裝或 `driver_name` / `uid` 錯誤
+- `Could not open ... (error 32)`：其他程式（例如 ITE 測試工具）正在使用這個裝置，請先關閉
+- `Could not open ... (error 5)`：權限不足，請以系統管理員身分執行
+- `IOCTL_SPBTESTTOOL_OPEN failed`：driver 無法開啟 SPB 連線
+- `Write failed after 50 attempts`：I2C 傳輸失敗
