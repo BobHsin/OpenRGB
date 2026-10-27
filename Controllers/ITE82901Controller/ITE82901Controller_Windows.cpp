@@ -110,9 +110,9 @@ std::string ITE82901Controller::GetLocation()
 }
 
 /*---------------------------------------------------------*\
-| Switch the firmware to I2C protocol (cmd 0xE0, data 1)    |
+| Send set protocol (cmd 0xE0, ITE82901_SET_PROTOCOL_DATA)  |
 |                                                           |
-|   [0xE0][0x01] is the same on the wire in SMBus and I2C   |
+|   [0xE0][data] is the same on the wire in SMBus and I2C   |
 |   framing, so it works whatever mode the FW is in. It is  |
 |   resent before every LED update because the FW returns   |
 |   to its SMBus default after a power cycle (e.g. resume)  |
@@ -125,12 +125,12 @@ bool ITE82901Controller::SetProtocolLocked()
         return(true);
     }
 
-    bool ok = SendByteLocked(ITE82901_CMD_SET_PROTOCOL, ITE82901_PROTOCOL_I2C);
+    bool ok = SendByteLocked(ITE82901_CMD_SET_PROTOCOL, ITE82901_SET_PROTOCOL_DATA);
     CommandGap();
 
     if(!ok)
     {
-        LOG_ERROR("[ITE82901] Set protocol to I2C (0xE0 0x01) failed via %s", device_path.c_str());
+        LOG_ERROR("[ITE82901] Set protocol (0xE0 0x%02X) failed via %s", ITE82901_SET_PROTOCOL_DATA, device_path.c_str());
     }
 
     return(ok);

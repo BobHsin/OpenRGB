@@ -22,7 +22,7 @@
 #define ITE82901_DEFAULT_UID            0
 #define ITE82901_DEFAULT_LED_MASK       "0xFFFFFFFFFFFFFFFF"    /* lZone_Sel: all LEDs  */
 #define ITE82901_DEFAULT_PARAMETER      0                       /* gLedParameter[0]     */
-#define ITE82901_DEFAULT_I2C_PROTOCOL   true                    /* 0xE0 0x01, [cmd][data] */
+#define ITE82901_DEFAULT_I2C_PROTOCOL   true                    /* 0xE0 + data, [cmd][data] */
 
 /*---------------------------------------------------------*\
 | Settings helpers                                          |

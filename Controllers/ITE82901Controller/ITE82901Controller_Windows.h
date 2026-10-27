@@ -48,6 +48,13 @@ enum
     ITE82901_PROTOCOL_I2C               = 0x01,
 };
 
+/*---------------------------------------------------------*\
+| Data byte sent with ITE82901_CMD_SET_PROTOCOL before      |
+| every LED update. Test build: 0x00 (doc: 0 = SMBus).      |
+| Change back to ITE82901_PROTOCOL_I2C (0x01) if needed.    |
+\*---------------------------------------------------------*/
+#define ITE82901_SET_PROTOCOL_DATA          ITE82901_PROTOCOL_SMBUS
+
 #define ITE82901_PARAMETER_SIZE             32      /* gLedParameter size in bytes          */
 #define ITE82901_PARAMETER_COUNT            8       /* 0x20-0x27, selectable by 0x28 mask   */
 #define ITE82901_COMMAND_GAP_MS             2       /* Spec: min 1 ms between commands      */

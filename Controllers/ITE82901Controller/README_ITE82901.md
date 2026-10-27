@@ -12,14 +12,14 @@
 
 | 指令 | 資料 | 用途 |
 |---|---|---|
-| `0xE0` | 1 byte（1） | 將 FW 切換成 I2C 協定（每次更新燈效前都會送出） |
+| `0xE0` | 1 byte（目前 0x00） | Set protocol（每次更新燈效前都會送出；值定義在 `ITE82901_SET_PROTOCOL_DATA`） |
 | `0x20+N` | 32 bytes | 寫入 gLedParameter[N] |
 | `0x28` | 1 byte（bitN） | 套用 parameter N |
 
 封包格式（預設 I2C 協定）：
 
 ```
-[0xE0][0x01]
+[0xE0][0x00]
 [0x20+N][lZone_Sel x8][00][bMode_Sel][bMax_brightness][bMin_brightness]
 [dwColor0 x4][dwColor1 x4][wTime_base0-3 x8][bCtrl_value0-3 x4]
 [0x28][1<<N]
@@ -28,7 +28,7 @@
 本驅動不會存檔（不送 `0x5E`），OpenRGB 也不會顯示「Save to device」按鈕；燈效只在 FW 執行期間有效。
 
 FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的 FW 收到 I2C 格式的封包時可能不會回報錯誤，
-所以每次更新燈效前都會重新送出 `E0 01`。`E0 01` 在兩種協定下的格式相同，不論 FW 目前在哪個模式都能正確解讀。
+所以每次更新燈效前都會重新送出 `E0 00`。`E0 xx` 在兩種協定下的格式相同，不論 FW 目前在哪個模式都能正確解讀。
 
 多位元組欄位皆為 little-endian，顏色為 0x00RRGGBB。每個指令之間間隔 2 ms（規格要求至少 1 ms）。
 
@@ -74,7 +74,7 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 - `driver_name` + `uid`：裝置路徑，例如 `\\.\ITE8853_0`
 - `led_mask`：lZone_Sel，bit x = LED x
 - `parameter_index`：使用的 gLedParameter 編號（0～7）
-- `i2c_protocol`：`true`（預設）= 先送 `E0 01`，封包為 `[cmd][data]`；`false` = 不切換協定，封包為 SMBus block write `[cmd][count][data]`
+- `i2c_protocol`：`true`（預設）= 先送 `E0 00`，封包為 `[cmd][data]`；`false` = 不切換協定，封包為 SMBus block write `[cmd][count][data]`
 - 上一版寫入的 `smbus_block` 欄位會自動移除
 
 ## 除錯
@@ -84,5 +84,5 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 - `Could not open \\.\ITE8853_0 (error 2)`：driver 未安裝或 `driver_name` / `uid` 錯誤
 - `Could not open ... (error 32)`：其他程式正在使用這個裝置
 - `Failed to set LED parameter`：I2C 傳輸失敗
-- `Set protocol to I2C (0xE0 0x01) failed`：協定切換指令傳送失敗
+- `Set protocol (0xE0 0x00) failed`：協定切換指令傳送失敗
 - 燈沒有反應但沒有錯誤：確認 FW 支援 `0xE0`，或把 `i2c_protocol` 改成 `false` 改用 SMBus 格式

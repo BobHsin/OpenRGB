@@ -20,7 +20,7 @@
     @detectors DetectITE82901Controllers
     @comment Uses the ITE SPB peripheral kernel driver (ITE8853_<UID>)
         to reach the PCH I2C controller. LED effects use the IT8297 /
-        IT8237 LED parameter protocol in I2C mode (0xE0 0x01, then
+        IT8237 LED parameter protocol, raw I2C framing (0xE0 0x00, then
         command 0x20+N, apply 0x28). Settings are not saved to flash. Configure under "ITE82901Devices" in OpenRGB.json.
 \*-------------------------------------------------------------------*/
 
