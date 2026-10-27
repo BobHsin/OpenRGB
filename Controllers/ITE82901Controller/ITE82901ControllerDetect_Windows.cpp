@@ -18,26 +18,34 @@
 
 #define ITE82901_SETTINGS_KEY           "ITE82901Devices"
 #define ITE82901_DEFAULT_NAME           "ITE 82901"
-#define ITE82901_DEFAULT_DRIVER_NAME    "ITE8853_"      /* \\.\ITE8853_<UID>        */
+#define ITE82901_DEFAULT_DRIVER_NAME    "ITE8853_"              /* \\.\ITE8853_<UID>    */
 #define ITE82901_DEFAULT_UID            0
+#define ITE82901_DEFAULT_LED_MASK       "0xFFFFFFFFFFFFFFFF"    /* lZone_Sel: all LEDs  */
+#define ITE82901_DEFAULT_PARAMETER      0                       /* gLedParameter[0]     */
+#define ITE82901_DEFAULT_I2C_PROTOCOL   true                    /* 0xE0 0x01, [cmd][data] */
 
 /*---------------------------------------------------------*\
 | Settings helpers                                          |
 \*---------------------------------------------------------*/
-static int ReadIntSetting(const json& obj, const char* key, int default_value)
+static unsigned long long ReadU64Setting(const json& obj, const char* key, unsigned long long default_value)
 {
     if(obj.contains(key))
     {
+        if(obj[key].is_number_unsigned())
+        {
+            return(obj[key].get<unsigned long long>());
+        }
+
         if(obj[key].is_number_integer())
         {
-            return(obj[key].get<int>());
+            return((unsigned long long)obj[key].get<long long>());
         }
 
         if(obj[key].is_string())
         {
             try
             {
-                return((int)std::stoul(obj[key].get<std::string>(), nullptr, 0));
+                return(std::stoull(obj[key].get<std::string>(), nullptr, 0));
             }
             catch(...)
             {
@@ -46,6 +54,11 @@ static int ReadIntSetting(const json& obj, const char* key, int default_value)
     }
 
     return(default_value);
+}
+
+static int ReadIntSetting(const json& obj, const char* key, int default_value)
+{
+    return((int)ReadU64Setting(obj, key, (unsigned long long)default_value));
 }
 
 static bool ReadBoolSetting(const json& obj, const char* key, bool default_value)
@@ -72,18 +85,20 @@ static json MakeDefaultDevice()
 {
     json device;
 
-    device["enabled"]       = true;
-    device["name"]          = ITE82901_DEFAULT_NAME;
-    device["driver_name"]   = ITE82901_DEFAULT_DRIVER_NAME;
-    device["uid"]           = ITE82901_DEFAULT_UID;
-    device["probe_read"]    = false;
+    device["enabled"]           = true;
+    device["name"]              = ITE82901_DEFAULT_NAME;
+    device["driver_name"]       = ITE82901_DEFAULT_DRIVER_NAME;
+    device["uid"]               = ITE82901_DEFAULT_UID;
+    device["led_mask"]          = ITE82901_DEFAULT_LED_MASK;
+    device["parameter_index"]   = ITE82901_DEFAULT_PARAMETER;
+    device["i2c_protocol"]      = ITE82901_DEFAULT_I2C_PROTOCOL;
 
     return(device);
 }
 
 /*---------------------------------------------------------*\
-| Create default settings, or add the driver keys to        |
-| entries written by earlier versions (bus/address based)   |
+| Create default settings, or add missing keys to entries   |
+| written by earlier versions                               |
 \*---------------------------------------------------------*/
 static json LoadSettings(SettingsManager* settings_manager)
 {
@@ -98,28 +113,27 @@ static json LoadSettings(SettingsManager* settings_manager)
     }
     else
     {
+        json defaults = MakeDefaultDevice();
+
         for(json& dev : settings["devices"])
         {
-            if(!dev.contains("driver_name"))
-            {
-                dev["driver_name"] = ITE82901_DEFAULT_DRIVER_NAME;
-                changed = true;
-            }
-
-            if(!dev.contains("uid"))
-            {
-                dev["uid"] = ITE82901_DEFAULT_UID;
-                changed = true;
-            }
-
             /*---------------------------------------------*\
-            | Old placeholder template (enabled:false,      |
-            | address "0x00") from the first version        |
+            | "smbus_block" (previous version, default true)|
+            | is replaced by "i2c_protocol"                 |
             \*---------------------------------------------*/
-            if(!ReadBoolSetting(dev, "enabled", true) && ReadIntSetting(dev, "address", -1) == 0x00)
+            if(dev.contains("smbus_block"))
             {
-                dev["enabled"] = true;
+                dev.erase("smbus_block");
                 changed = true;
+            }
+
+            for(json::iterator it = defaults.begin(); it != defaults.end(); ++it)
+            {
+                if(!dev.contains(it.key()))
+                {
+                    dev[it.key()] = it.value();
+                    changed = true;
+                }
             }
         }
     }
@@ -155,11 +169,20 @@ DetectedControllers DetectITE82901Controllers()
             continue;
         }
 
-        std::string name        = ReadStringSetting(dev, "name",        ITE82901_DEFAULT_NAME);
-        std::string driver_name = ReadStringSetting(dev, "driver_name", ITE82901_DEFAULT_DRIVER_NAME);
-        int         uid         = ReadIntSetting   (dev, "uid",         ITE82901_DEFAULT_UID);
+        std::string         name        = ReadStringSetting(dev, "name",            ITE82901_DEFAULT_NAME);
+        std::string         driver_name = ReadStringSetting(dev, "driver_name",     ITE82901_DEFAULT_DRIVER_NAME);
+        int                 uid         = ReadIntSetting   (dev, "uid",             ITE82901_DEFAULT_UID);
+        unsigned long long  led_mask    = ReadU64Setting   (dev, "led_mask",        0xFFFFFFFFFFFFFFFFULL);
+        int                 param_index = ReadIntSetting   (dev, "parameter_index", ITE82901_DEFAULT_PARAMETER);
+        bool                i2c_mode    = ReadBoolSetting  (dev, "i2c_protocol",    ITE82901_DEFAULT_I2C_PROTOCOL);
 
-        ITE82901Controller* controller = new ITE82901Controller(name, driver_name, uid);
+        if(param_index < 0 || param_index >= ITE82901_PARAMETER_COUNT)
+        {
+            LOG_ERROR("[ITE82901] parameter_index %d out of range (0-%d) for \"%s\", using 0", param_index, ITE82901_PARAMETER_COUNT - 1, name.c_str());
+            param_index = 0;
+        }
+
+        ITE82901Controller* controller = new ITE82901Controller(name, driver_name, uid, led_mask, param_index, i2c_mode);
 
         /*-------------------------------------------------*\
         | Driver not installed / device not present: skip   |
@@ -170,14 +193,8 @@ DetectedControllers DetectITE82901Controllers()
             continue;
         }
 
-        if(ReadBoolSetting(dev, "probe_read", false) && !controller->ProbeRead())
-        {
-            LOG_ERROR("[ITE82901] No response from %s, skipping \"%s\"", controller->GetLocation().c_str(), name.c_str());
-            delete controller;
-            continue;
-        }
-
-        LOG_INFO("[ITE82901] Registered \"%s\" (%s)", name.c_str(), controller->GetLocation().c_str());
+        LOG_INFO("[ITE82901] Registered \"%s\" (%s, LED mask 0x%016llX)",
+                 name.c_str(), controller->GetLocation().c_str(), led_mask);
 
         detected_controllers.push_back(new RGBController_ITE82901(controller));
     }

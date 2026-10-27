@@ -1,8 +1,9 @@
 /*---------------------------------------------------------*\
 | ITE82901Controller_Windows.h                              |
 |                                                           |
-|   Driver for ITE 82901 LED controller over PCH I2C,       |
-|   through the ITE SPB peripheral kernel driver (IOCTL)    |
+|   Driver for ITE 82901 LED controller (IT8297/IT8237      |
+|   LED parameter protocol) over PCH I2C, through the ITE   |
+|   SPB peripheral kernel driver (IOCTL)                    |
 |                                                           |
 |   This file is part of the OpenRGB project                |
 |   SPDX-License-Identifier: GPL-2.0-or-later               |
@@ -14,7 +15,6 @@
 #include <winioctl.h>
 #include <mutex>
 #include <string>
-#include <vector>
 
 /*---------------------------------------------------------*\
 | ITE SPB peripheral driver interface                       |
@@ -33,52 +33,92 @@
 #define ITE_SPB_IO_RETRIES                  50      /* Same as ITE reference DLL    */
 
 /*---------------------------------------------------------*\
-| Command index                                             |
+| IT8297/IT8237 LED controller commands                     |
 \*---------------------------------------------------------*/
 enum
 {
-    ITE82901_CMD_PATTERN_SET            = 0x22,     /* LED pattern set for all LEDs     */
+    ITE82901_CMD_LED_PARAMETER_0        = 0x20,     /* 0x20+N: set LED parameter N (32 B)   */
+    ITE82901_CMD_APPLY                  = 0x28,     /* 1 B: bitN=1 applies parameter N      */
+    ITE82901_CMD_SET_PROTOCOL           = 0xE0,     /* 1 B: 1 = I2C, 0 = SMBus (FW default) */
+};
+
+enum
+{
+    ITE82901_PROTOCOL_SMBUS             = 0x00,
+    ITE82901_PROTOCOL_I2C               = 0x01,
+};
+
+#define ITE82901_PARAMETER_SIZE             32      /* gLedParameter size in bytes          */
+#define ITE82901_PARAMETER_COUNT            8       /* 0x20-0x27, selectable by 0x28 mask   */
+#define ITE82901_COMMAND_GAP_MS             2       /* Spec: min 1 ms between commands      */
+
+/*---------------------------------------------------------*\
+| bMode_Sel values                                          |
+\*---------------------------------------------------------*/
+enum
+{
+    ITE82901_MODE_NULL                  = 0,
+    ITE82901_MODE_STATIC                = 1,
+    ITE82901_MODE_PULSE                 = 2,        /* Breath                           */
+    ITE82901_MODE_FLASH                 = 3,
+    ITE82901_MODE_COLOR_CYCLE           = 4,
+    ITE82901_MODE_METEOR                = 5,
+    ITE82901_MODE_RAINBOW               = 6,
+    ITE82901_MODE_RIPPLE                = 7,
+    ITE82901_MODE_RANDOM                = 8,
+    ITE82901_MODE_WAVE2                 = 9,
 };
 
 /*---------------------------------------------------------*\
-| Pattern index (data byte of ITE82901_CMD_PATTERN_SET)     |
+| One gLedParameter (zone mask is set by the controller)    |
+|   Colors are 0x00RRGGBB, times are milliseconds,          |
+|   brightness is percent (0-100)                           |
 \*---------------------------------------------------------*/
-enum
+typedef struct
 {
-    ITE82901_PATTERN_OFF                = 0x00,     /* Shut down (0x00 and 0x01)        */
-    ITE82901_PATTERN_FLASH              = 0x02,
-    ITE82901_PATTERN_DOUBLE_FLASH       = 0x03,
-    ITE82901_PATTERN_BREATH             = 0x04,
-    ITE82901_PATTERN_JUMP               = 0x05,
-    ITE82901_PATTERN_RAINBOW_CYCLE      = 0x06,
-    ITE82901_PATTERN_COLOR_CYCLE        = 0x07,
-    ITE82901_PATTERN_WAVE               = 0x08,
-    ITE82901_PATTERN_DEFAULT            = 0x1C,     /* Reset: Group A purple, B white   */
-};
+    unsigned char   mode;               /* bMode_Sel                        */
+    unsigned char   max_brightness;     /* bMax_brightness                  */
+    unsigned char   min_brightness;     /* bMin_brightness                  */
+    unsigned int    color0;             /* dwColor0                         */
+    unsigned int    color1;             /* dwColor1                         */
+    unsigned short  time_base[4];       /* wTime_base0-3                    */
+    unsigned char   ctrl_value[4];      /* bCtrl_value0-3                   */
+} ite82901_led_parameter;
 
 class ITE82901Controller
 {
 public:
-    ITE82901Controller(std::string dev_name, std::string driver_name, int driver_uid);
+    ITE82901Controller
+        (
+        std::string         dev_name,
+        std::string         driver_name,
+        int                 driver_uid,
+        unsigned long long  zone_mask,
+        int                 parameter_index,
+        bool                i2c_protocol
+        );
     ~ITE82901Controller();
 
     bool            Open();
-    bool            IsOpen();
     std::string     GetName();
     std::string     GetLocation();
 
-    bool            SetPattern(unsigned char pattern);
-    bool            ProbeRead();
+    bool            SetLedParameter(const ite82901_led_parameter* param);
 
 private:
-    std::string     name;
-    std::string     device_path;
-    HANDLE          dev_handle;
-    std::mutex      io_mutex;
+    std::string         name;
+    std::string         device_path;
+    unsigned long long  led_zone_mask;
+    int                 param_index;
+    bool                use_i2c_protocol;
+    HANDLE              dev_handle;
+    std::mutex          io_mutex;
 
     bool            OpenLocked();
     void            CloseLocked();
     bool            Overlapped(int op, DWORD ioctl, void* in, DWORD in_len, void* out, DWORD out_len, DWORD* transferred);
-    bool            Write(const unsigned char* data, int len);
-    bool            Read(unsigned char* data, int len);
+    bool            WriteLocked(const unsigned char* data, int len);
+    bool            SendBlockLocked(unsigned char cmd, const unsigned char* data, int len);
+    bool            SendByteLocked(unsigned char cmd, unsigned char data);
+    bool            SetProtocolLocked();
 };

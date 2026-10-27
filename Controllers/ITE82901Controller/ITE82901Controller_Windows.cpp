@@ -1,15 +1,18 @@
 /*---------------------------------------------------------*\
 | ITE82901Controller_Windows.cpp                            |
 |                                                           |
-|   Driver for ITE 82901 LED controller over PCH I2C,       |
-|   through the ITE SPB peripheral kernel driver (IOCTL)    |
+|   Driver for ITE 82901 LED controller (IT8297/IT8237      |
+|   LED parameter protocol) over PCH I2C, through the ITE   |
+|   SPB peripheral kernel driver (IOCTL)                    |
 |                                                           |
 |   This file is part of the OpenRGB project                |
 |   SPDX-License-Identifier: GPL-2.0-or-later               |
 \*---------------------------------------------------------*/
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include "ITE82901Controller_Windows.h"
 #include "LogManager.h"
 
@@ -23,15 +26,61 @@ enum
     ITE_SPB_OP_IOCTL    = 2,
 };
 
-ITE82901Controller::ITE82901Controller(std::string dev_name, std::string driver_name, int driver_uid)
+/*---------------------------------------------------------*\
+| Little-endian helpers (no struct packing assumptions)     |
+\*---------------------------------------------------------*/
+static void PutLE16(unsigned char* buf, unsigned short value)
+{
+    buf[0] = (unsigned char)(value & 0xFF);
+    buf[1] = (unsigned char)((value >> 8) & 0xFF);
+}
+
+static void PutLE32(unsigned char* buf, unsigned int value)
+{
+    for(int i = 0; i < 4; i++)
+    {
+        buf[i] = (unsigned char)((value >> (8 * i)) & 0xFF);
+    }
+}
+
+static void PutLE64(unsigned char* buf, unsigned long long value)
+{
+    for(int i = 0; i < 8; i++)
+    {
+        buf[i] = (unsigned char)((value >> (8 * i)) & 0xFF);
+    }
+}
+
+static void CommandGap()
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(ITE82901_COMMAND_GAP_MS));
+}
+
+ITE82901Controller::ITE82901Controller
+    (
+    std::string         dev_name,
+    std::string         driver_name,
+    int                 driver_uid,
+    unsigned long long  zone_mask,
+    int                 parameter_index,
+    bool                i2c_protocol
+    )
 {
     char path[128];
 
     snprintf(path, sizeof(path), "\\\\.\\%s%d", driver_name.c_str(), driver_uid);
 
-    name        = dev_name;
-    device_path = path;
-    dev_handle  = INVALID_HANDLE_VALUE;
+    name            = dev_name;
+    device_path     = path;
+    led_zone_mask   = zone_mask;
+    param_index     = parameter_index;
+    use_i2c_protocol = i2c_protocol;
+    dev_handle      = INVALID_HANDLE_VALUE;
+
+    if(param_index < 0 || param_index >= ITE82901_PARAMETER_COUNT)
+    {
+        param_index = 0;
+    }
 }
 
 ITE82901Controller::~ITE82901Controller()
@@ -46,12 +95,6 @@ bool ITE82901Controller::Open()
     return(OpenLocked());
 }
 
-bool ITE82901Controller::IsOpen()
-{
-    std::lock_guard<std::mutex> lock(io_mutex);
-    return(dev_handle != INVALID_HANDLE_VALUE);
-}
-
 std::string ITE82901Controller::GetName()
 {
     return(name);
@@ -59,34 +102,132 @@ std::string ITE82901Controller::GetName()
 
 std::string ITE82901Controller::GetLocation()
 {
-    return("ITE SPB driver: " + device_path);
+    char buf[160];
+
+    snprintf(buf, sizeof(buf), "ITE SPB driver: %s, parameter %d, %s", device_path.c_str(), param_index, use_i2c_protocol ? "I2C" : "SMBus");
+
+    return(std::string(buf));
 }
 
 /*---------------------------------------------------------*\
-| Packet: [ 0x22 ][ pattern index ]                         |
+| Switch the firmware to I2C protocol (cmd 0xE0, data 1)    |
+|                                                           |
+|   [0xE0][0x01] is the same on the wire in SMBus and I2C   |
+|   framing, so it works whatever mode the FW is in. It is  |
+|   resent before every LED update because the FW returns   |
+|   to its SMBus default after a power cycle (e.g. resume)  |
+|   and a raw I2C packet would then be misread silently.    |
 \*---------------------------------------------------------*/
-bool ITE82901Controller::SetPattern(unsigned char pattern)
+bool ITE82901Controller::SetProtocolLocked()
 {
-    unsigned char packet[2] = { ITE82901_CMD_PATTERN_SET, pattern };
+    if(!use_i2c_protocol)
+    {
+        return(true);
+    }
 
-    bool ok = Write(packet, sizeof(packet));
+    bool ok = SendByteLocked(ITE82901_CMD_SET_PROTOCOL, ITE82901_PROTOCOL_I2C);
+    CommandGap();
 
     if(!ok)
     {
-        LOG_ERROR("[ITE82901] Failed to write pattern 0x%02X via %s", pattern, device_path.c_str());
+        LOG_ERROR("[ITE82901] Set protocol to I2C (0xE0 0x01) failed via %s", device_path.c_str());
     }
 
     return(ok);
 }
 
 /*---------------------------------------------------------*\
-| 1-byte read, used only to check the device responds       |
+| Write gLedParameter[N] (cmd 0x20+N, 32 bytes) and apply   |
+| it (cmd 0x28, bitN)                                       |
+|                                                           |
+|   Offset  Size  Field                                     |
+|   0       8     lZone_Sel (bit x = LED x)                 |
+|   8       1     bReserve0                                 |
+|   9       1     bMode_Sel                                 |
+|   10      1     bMax_brightness (%)                       |
+|   11      1     bMin_brightness (%)                       |
+|   12      4     dwColor0 (0x00RRGGBB)                     |
+|   16      4     dwColor1 (0x00RRGGBB)                     |
+|   20      8     wTime_base0-3 (ms)                        |
+|   28      4     bCtrl_value0-3                            |
 \*---------------------------------------------------------*/
-bool ITE82901Controller::ProbeRead()
+bool ITE82901Controller::SetLedParameter(const ite82901_led_parameter* param)
 {
-    unsigned char data[1] = { 0 };
+    unsigned char buf[ITE82901_PARAMETER_SIZE];
 
-    return(Read(data, sizeof(data)));
+    memset(buf, 0, sizeof(buf));
+
+    PutLE64(&buf[0],  led_zone_mask);
+    buf[8]  = 0x00;
+    buf[9]  = param->mode;
+    buf[10] = param->max_brightness;
+    buf[11] = param->min_brightness;
+    PutLE32(&buf[12], param->color0);
+    PutLE32(&buf[16], param->color1);
+
+    for(int i = 0; i < 4; i++)
+    {
+        PutLE16(&buf[20 + (2 * i)], param->time_base[i]);
+        buf[28 + i] = param->ctrl_value[i];
+    }
+
+    std::lock_guard<std::mutex> lock(io_mutex);
+
+    bool ok = SetProtocolLocked();
+
+    if(ok)
+    {
+        ok = SendBlockLocked((unsigned char)(ITE82901_CMD_LED_PARAMETER_0 + param_index), buf, sizeof(buf));
+        CommandGap();
+    }
+
+    if(ok)
+    {
+        ok = SendByteLocked(ITE82901_CMD_APPLY, (unsigned char)(1 << param_index));
+        CommandGap();
+    }
+
+    if(!ok)
+    {
+        LOG_ERROR("[ITE82901] Failed to set LED parameter %d (mode %d) via %s", param_index, param->mode, device_path.c_str());
+    }
+
+    return(ok);
+}
+
+/*---------------------------------------------------------*\
+| Command framing                                           |
+|   I2C (default)     : [cmd][data...]                      |
+|   SMBus block write : [cmd][count][data...]               |
+\*---------------------------------------------------------*/
+bool ITE82901Controller::SendBlockLocked(unsigned char cmd, const unsigned char* data, int len)
+{
+    unsigned char packet[2 + ITE82901_PARAMETER_SIZE];
+    int           pos = 0;
+
+    if(len < 0 || len > ITE82901_PARAMETER_SIZE)
+    {
+        return(false);
+    }
+
+    packet[pos++] = cmd;
+
+    if(!use_i2c_protocol)
+    {
+        packet[pos++] = (unsigned char)len;
+    }
+
+    memcpy(&packet[pos], data, len);
+    pos += len;
+
+    return(WriteLocked(packet, pos));
+}
+
+bool ITE82901Controller::SendByteLocked(unsigned char cmd, unsigned char data)
+{
+    unsigned char packet[2] = { cmd, data };
+
+    return(WriteLocked(packet, sizeof(packet)));
 }
 
 /*---------------------------------------------------------*\
@@ -200,10 +341,8 @@ bool ITE82901Controller::Overlapped(int op, DWORD ioctl, void* in, DWORD in_len,
 | Write with retries (same policy as the ITE reference DLL) |
 | and automatic re-open after a failure                     |
 \*---------------------------------------------------------*/
-bool ITE82901Controller::Write(const unsigned char* data, int len)
+bool ITE82901Controller::WriteLocked(const unsigned char* data, int len)
 {
-    std::lock_guard<std::mutex> lock(io_mutex);
-
     if(len <= 0 || len > ITE_SPB_MAX_TRANSFER)
     {
         return(false);
@@ -227,38 +366,11 @@ bool ITE82901Controller::Write(const unsigned char* data, int len)
         }
     }
 
-    LOG_ERROR("[ITE82901] Write failed after %d attempts (error %lu), re-opening on next use", ITE_SPB_IO_RETRIES, GetLastError());
+    LOG_ERROR("[ITE82901] Write of command 0x%02X failed after %d attempts (error %lu), re-opening on next use", buf[0], ITE_SPB_IO_RETRIES, GetLastError());
 
     /*-----------------------------------------------------*\
     | Handle may be stale (e.g. after sleep/resume)         |
     \*-----------------------------------------------------*/
     CloseLocked();
-    return(false);
-}
-
-bool ITE82901Controller::Read(unsigned char* data, int len)
-{
-    std::lock_guard<std::mutex> lock(io_mutex);
-
-    if(len <= 0 || len > ITE_SPB_MAX_TRANSFER)
-    {
-        return(false);
-    }
-
-    for(int attempt = 0; attempt < ITE_SPB_IO_RETRIES; attempt++)
-    {
-        if(!OpenLocked())
-        {
-            return(false);
-        }
-
-        DWORD transferred = 0;
-
-        if(Overlapped(ITE_SPB_OP_READ, 0, NULL, 0, data, (DWORD)len, &transferred) && (int)transferred == len)
-        {
-            return(true);
-        }
-    }
-
     return(false);
 }
