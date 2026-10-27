@@ -57,7 +57,7 @@ enum
 
 #define ITE82901_PARAMETER_SIZE             32      /* gLedParameter size in bytes          */
 #define ITE82901_PARAMETER_COUNT            8       /* 0x20-0x27, selectable by 0x28 mask   */
-#define ITE82901_COMMAND_GAP_MS             2       /* Spec: min 1 ms between commands      */
+#define ITE82901_COMMAND_GAP_MS             5       /* Delay after every packet (spec: >= 1 ms) */
 
 /*---------------------------------------------------------*\
 | bMode_Sel values                                          |
