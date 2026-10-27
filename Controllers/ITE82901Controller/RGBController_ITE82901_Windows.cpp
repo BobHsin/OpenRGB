@@ -38,8 +38,7 @@ enum
     ITE82901_UI_METEOR          = 6,
     ITE82901_UI_RAINBOW_WAVE    = 7,
     ITE82901_UI_RIPPLE          = 8,
-    ITE82901_UI_RANDOM          = 9,
-    ITE82901_UI_WAVE            = 10,
+    ITE82901_UI_WAVE            = 9,
 };
 
 /*---------------------------------------------------------*\
@@ -143,7 +142,6 @@ RGBController_ITE82901::RGBController_ITE82901(ITE82901Controller* controller_pt
     AddMode(modes, "Meteor",          ITE82901_UI_METEOR,         color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
     AddMode(modes, "Rainbow Wave",    ITE82901_UI_RAINBOW_WAVE,   effect_flags,                                                         MODE_COLORS_NONE,          0);
     AddMode(modes, "Ripple",          ITE82901_UI_RIPPLE,         color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 2);
-    AddMode(modes, "Random",          ITE82901_UI_RANDOM,         effect_flags,                                                         MODE_COLORS_NONE,          0);
     AddMode(modes, "Wave",            ITE82901_UI_WAVE,           effect_flags,                                                         MODE_COLORS_NONE,          0);
 
     /*-----------------------------------------------------*\
@@ -319,16 +317,6 @@ void RGBController_ITE82901::DeviceUpdateMode()
             p.time_base[1]      = (unsigned short)(p.time_base[0] * 4);
             p.time_base[2]      = 2000;
             p.ctrl_value[0]     = random ? ITE82901_ALL_PATTERN_COLORS : 0;
-            break;
-
-        /*-------------------------------------------------*\
-        | Random: time0 off time, ctrl0 average speed 0-2   |
-        \*-------------------------------------------------*/
-        case ITE82901_UI_RANDOM:
-            p.mode              = ITE82901_MODE_RANDOM;
-            p.time_base[0]      = 100;
-            p.ctrl_value[0]     = (unsigned char)((m.speed * 3) / (ITE82901_SPEED_MAX + 1));
-            p.ctrl_value[1]     = 0;
             break;
 
         /*-------------------------------------------------*\

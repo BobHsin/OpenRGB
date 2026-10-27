@@ -45,7 +45,6 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 | Meteor | 5 Meteor | 顏色/隨機、速度、亮度 | step 200→20 ms，tail = step × 8 |
 | Rainbow Wave | 6 Rainbow | 速度、亮度 | step 300→30 ms，7 色，pulse 關閉 |
 | Ripple | 7 Ripple | 2 色/隨機、速度、亮度 | step 200→20 ms，tail = step × 4，cycle 2000 ms |
-| Random | 8 Random | 速度、亮度 | off time 100 ms，avg speed 0~2 |
 | Wave | 9 Wave2 | 速度、亮度 | speed 500→50 ms，distance 3 |
 
 「隨機」= bCtrl_value0 設為 7，使用晶片內建的 7 色表（指令 0x30）。
