@@ -15,6 +15,9 @@
 | `0xE0` | 1 byte（目前 0x00） | Set protocol（每次更新燈效前都會送出；值定義在 `ITE82901_SET_PROTOCOL_DATA`） |
 | `0x20+N` | 32 bytes | 寫入 gLedParameter[N] |
 | `0x28` | 1 byte（bitN） | 套用 parameter N |
+| `0x5E` | 無 | 將目前燈效存成 FW 預設燈效（OpenRGB 的「Save to Device」） |
+| `0xE1` | 1 byte（1） | 切換成 normal mode（支援讀取），啟動讀回前送出 |
+| `0x20+N`（讀） | 讀 32 bytes | 啟動時讀回目前的預設燈效 |
 
 封包格式（預設 I2C 協定）：
 
@@ -25,7 +28,31 @@
 [0x28][1<<N]
 ```
 
-本驅動不會存檔（不送 `0x5E`），OpenRGB 也不會顯示「Save to device」按鈕；燈效只在 FW 執行期間有效。
+### 存檔
+
+按下 OpenRGB 的「Save to Device」會送出：
+
+```
+[0xE0][0x00]
+[0x5E]
+```
+
+### 啟動時讀回預設燈效
+
+OpenRGB 啟動（偵測到裝置）時會送出：
+
+```
+[0xE0][0x00]
+[0xE1][0x01]                       normal mode，才能讀取
+write [0x20+N]，repeated start，read 33 bytes   （IOCTL_SPBTESTTOOL_WRITEREAD）
+```
+
+文件沒有定義讀取的格式，所以程式會讀 33 bytes，並自動判斷：
+第一個 byte 是 `0x20`（32）且後面 32 bytes 合理 → SMBus block read；否則前 32 bytes 合理 → 直接是參數。
+讀回的原始資料會寫進 log（`[ITE82901] Read 0x20 returned ...`），可以和邏輯分析儀對照。
+
+讀回後依 bMode_Sel 切換 UI 的模式，並帶入顏色、亮度、速度（由時間反推）、隨機色；**不會**送出任何燈效指令。
+讀取失敗或讀到 OpenRGB 沒有的模式（例如 Random）時，UI 停在 Static。
 
 FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的 FW 收到 I2C 格式的封包時可能不會回報錯誤，
 所以每次更新燈效前都會重新送出 `E0 00`。`E0 xx` 在兩種協定下的格式相同，不論 FW 目前在哪個模式都能正確解讀。

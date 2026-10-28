@@ -35,7 +35,10 @@ public:
     void        DeviceUpdateSingleLED(int led);
 
     void        DeviceUpdateMode();
+    void        DeviceSaveMode();
 
 private:
     ITE82901Controller* controller;
+
+    void        LoadModeFromDevice();
 };

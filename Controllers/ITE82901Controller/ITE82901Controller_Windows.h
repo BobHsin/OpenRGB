@@ -39,7 +39,15 @@ enum
 {
     ITE82901_CMD_LED_PARAMETER_0        = 0x20,     /* 0x20+N: set LED parameter N (32 B)   */
     ITE82901_CMD_APPLY                  = 0x28,     /* 1 B: bitN=1 applies parameter N      */
+    ITE82901_CMD_SAVE                   = 0x5E,     /* 0 B: save parameters as default      */
     ITE82901_CMD_SET_PROTOCOL           = 0xE0,     /* 1 B: 1 = I2C, 0 = SMBus (FW default) */
+    ITE82901_CMD_SET_RW_MODE            = 0xE1,     /* 1 B: 0 = fast write only, 1 = normal */
+};
+
+enum
+{
+    ITE82901_RW_MODE_FAST_WRITE         = 0x00,
+    ITE82901_RW_MODE_NORMAL             = 0x01,     /* Required for reads                   */
 };
 
 enum
@@ -58,6 +66,7 @@ enum
 #define ITE82901_PARAMETER_SIZE             32      /* gLedParameter size in bytes          */
 #define ITE82901_PARAMETER_COUNT            8       /* 0x20-0x27, selectable by 0x28 mask   */
 #define ITE82901_COMMAND_GAP_MS             5       /* Delay after every packet (spec: >= 1 ms) */
+#define ITE82901_READ_RETRIES               3       /* Read-back attempts at startup        */
 
 /*---------------------------------------------------------*\
 | bMode_Sel values                                          |
@@ -111,6 +120,8 @@ public:
     std::string     GetLocation();
 
     bool            SetLedParameter(const ite82901_led_parameter* param);
+    bool            ReadLedParameter(ite82901_led_parameter* param);
+    bool            SaveToFlash();
 
 private:
     std::string         name;
@@ -128,4 +139,5 @@ private:
     bool            SendBlockLocked(unsigned char cmd, const unsigned char* data, int len);
     bool            SendByteLocked(unsigned char cmd, unsigned char data);
     bool            SetProtocolLocked();
+    bool            WriteReadLocked(unsigned char* write_data, int write_len, unsigned char* read_data, int read_len, int* read_count);
 };

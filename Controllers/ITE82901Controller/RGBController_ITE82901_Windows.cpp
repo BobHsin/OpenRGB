@@ -9,19 +9,21 @@
 
 #include <cstring>
 #include "RGBController_ITE82901_Windows.h"
+#include "LogManager.h"
 
 /**------------------------------------------------------------------*\
     @name ITE 82901
     @category Motherboard
     @type I2C
-    @save :x:
+    @save :white_check_mark:
     @direct :x:
     @effects :white_check_mark:
     @detectors DetectITE82901Controllers
     @comment Uses the ITE SPB peripheral kernel driver (ITE8853_<UID>)
         to reach the PCH I2C controller. LED effects use the IT8297 /
         IT8237 LED parameter protocol, raw I2C framing (0xE0 0x00, then
-        command 0x20+N, apply 0x28). Settings are not saved to flash. Configure under "ITE82901Devices" in OpenRGB.json.
+        command 0x20+N, apply 0x28, save 0x5E). The stored effect is
+        read back with 0x20 at startup. Configure under "ITE82901Devices" in OpenRGB.json.
 \*-------------------------------------------------------------------*/
 
 /*---------------------------------------------------------*\
@@ -69,6 +71,39 @@ static unsigned short SpeedToMs(unsigned int speed, int slow_ms, int fast_ms)
     return((unsigned short)ms);
 }
 
+/*---------------------------------------------------------*\
+| Inverse of SpeedToMs: milliseconds -> speed slider        |
+\*---------------------------------------------------------*/
+static unsigned int MsToSpeed(int ms, int slow_ms, int fast_ms)
+{
+    if(slow_ms == fast_ms)
+    {
+        return(ITE82901_SPEED_DEFAULT);
+    }
+
+    int speed = ((ms - slow_ms) * ITE82901_SPEED_MAX + (fast_ms - slow_ms) / 2) / (fast_ms - slow_ms);
+
+    if(speed < ITE82901_SPEED_MIN)
+    {
+        speed = ITE82901_SPEED_MIN;
+    }
+
+    if(speed > ITE82901_SPEED_MAX)
+    {
+        speed = ITE82901_SPEED_MAX;
+    }
+
+    return((unsigned int)speed);
+}
+
+/*---------------------------------------------------------*\
+| Convert dwColor (0x00RRGGBB) to OpenRGB color             |
+\*---------------------------------------------------------*/
+static RGBColor FromDeviceColor(unsigned int color)
+{
+    return(ToRGBColor((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF));
+}
+
 static void AddMode
     (
     std::vector<mode>&  modes,
@@ -83,7 +118,7 @@ static void AddMode
 
     new_mode.name       = mode_name;
     new_mode.value      = value;
-    new_mode.flags      = flags;
+    new_mode.flags      = flags | MODE_FLAG_MANUAL_SAVE;
     new_mode.color_mode = color_mode;
 
     if(flags & MODE_FLAG_HAS_SPEED)
@@ -145,11 +180,14 @@ RGBController_ITE82901::RGBController_ITE82901(ITE82901Controller* controller_pt
     AddMode(modes, "Wave",            ITE82901_UI_WAVE,           effect_flags,                                                         MODE_COLORS_NONE,          0);
 
     /*-----------------------------------------------------*\
-    | Device state cannot be read back; start on Static     |
+    | Start on Static, then replace with the effect stored  |
+    | in the FW if it can be read back                      |
     \*-----------------------------------------------------*/
     active_mode = ITE82901_UI_STATIC;
 
     SetupZones();
+
+    LoadModeFromDevice();
 }
 
 RGBController_ITE82901::~RGBController_ITE82901()
@@ -334,4 +372,121 @@ void RGBController_ITE82901::DeviceUpdateMode()
     }
 
     controller->SetLedParameter(&p);
+}
+
+void RGBController_ITE82901::DeviceSaveMode()
+{
+    controller->SaveToFlash();
+}
+
+/*---------------------------------------------------------*\
+| Read gLedParameter back (cmd 0x20) and set the UI to the  |
+| matching mode, colors, speed and brightness. Nothing is   |
+| written to the LEDs here.                                 |
+\*---------------------------------------------------------*/
+void RGBController_ITE82901::LoadModeFromDevice()
+{
+    ite82901_led_parameter p;
+
+    if(!controller->ReadLedParameter(&p))
+    {
+        LOG_INFO("[ITE82901] Could not read the stored effect, UI starts on Static");
+        return;
+    }
+
+    int          ui_mode = -1;
+    unsigned int speed   = ITE82901_SPEED_DEFAULT;
+    bool         random  = (p.ctrl_value[0] == ITE82901_ALL_PATTERN_COLORS);
+
+    switch(p.mode)
+    {
+        case ITE82901_MODE_STATIC:
+            ui_mode = (p.max_brightness == 0 || p.color0 == 0) ? ITE82901_UI_OFF : ITE82901_UI_STATIC;
+            random  = false;
+            break;
+
+        case ITE82901_MODE_PULSE:
+            ui_mode = ITE82901_UI_BREATHING;
+            speed   = MsToSpeed(p.time_base[0], 2000, 400);
+            break;
+
+        case ITE82901_MODE_FLASH:
+            if(p.ctrl_value[2] >= 2)
+            {
+                ui_mode = ITE82901_UI_DOUBLE_FLASH;
+                speed   = MsToSpeed(p.time_base[2], 2800, 800);
+            }
+            else
+            {
+                ui_mode = ITE82901_UI_FLASHING;
+                speed   = MsToSpeed(p.time_base[2], 2600, 600);
+            }
+            break;
+
+        case ITE82901_MODE_COLOR_CYCLE:
+            ui_mode = ITE82901_UI_SPECTRUM_CYCLE;
+            speed   = MsToSpeed(p.time_base[0], 2400, 300);
+            break;
+
+        case ITE82901_MODE_METEOR:
+            ui_mode = ITE82901_UI_METEOR;
+            speed   = MsToSpeed(p.time_base[0], 200, 20);
+            break;
+
+        case ITE82901_MODE_RAINBOW:
+            ui_mode = ITE82901_UI_RAINBOW_WAVE;
+            speed   = MsToSpeed(p.time_base[0], 300, 30);
+            break;
+
+        case ITE82901_MODE_RIPPLE:
+            ui_mode = ITE82901_UI_RIPPLE;
+            speed   = MsToSpeed(p.time_base[0], 200, 20);
+            break;
+
+        case ITE82901_MODE_WAVE2:
+            ui_mode = ITE82901_UI_WAVE;
+            speed   = MsToSpeed(p.time_base[0], 500, 50);
+            break;
+
+        default:
+            break;
+    }
+
+    if(ui_mode < 0 || ui_mode >= (int)modes.size())
+    {
+        LOG_INFO("[ITE82901] Stored bMode_Sel %d has no matching OpenRGB mode, UI starts on Static", p.mode);
+        return;
+    }
+
+    mode& m = modes[ui_mode];
+
+    if(m.flags & MODE_FLAG_HAS_SPEED)
+    {
+        m.speed = speed;
+    }
+
+    if(m.flags & MODE_FLAG_HAS_BRIGHTNESS)
+    {
+        m.brightness = (p.max_brightness > ITE82901_BRIGHTNESS_MAX) ? ITE82901_BRIGHTNESS_MAX : p.max_brightness;
+    }
+
+    if(m.colors.size() > 0)
+    {
+        m.colors[0] = FromDeviceColor(p.color0);
+    }
+
+    if(m.colors.size() > 1)
+    {
+        m.colors[1] = FromDeviceColor(p.color1);
+    }
+
+    if(random && (m.flags & MODE_FLAG_HAS_RANDOM_COLOR))
+    {
+        m.color_mode = MODE_COLORS_RANDOM;
+    }
+
+    active_mode = ui_mode;
+
+    LOG_INFO("[ITE82901] Stored effect: bMode_Sel %d -> \"%s\" (speed %u, brightness %u%%)",
+             p.mode, m.name.c_str(), m.speed, m.brightness);
 }

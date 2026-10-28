@@ -51,6 +51,27 @@ static void PutLE64(unsigned char* buf, unsigned long long value)
     }
 }
 
+static unsigned short GetLE16(const unsigned char* buf)
+{
+    return((unsigned short)(buf[0] | (buf[1] << 8)));
+}
+
+static unsigned int GetLE32(const unsigned char* buf)
+{
+    return((unsigned int)buf[0] | ((unsigned int)buf[1] << 8) | ((unsigned int)buf[2] << 16) | ((unsigned int)buf[3] << 24));
+}
+
+/*---------------------------------------------------------*\
+| Sanity check of a 32-byte gLedParameter image             |
+\*---------------------------------------------------------*/
+static bool LooksLikeParameter(const unsigned char* buf)
+{
+    return((buf[8] == 0x00)                         /* bReserve0                */
+        && (buf[9] <= ITE82901_MODE_WAVE2)          /* bMode_Sel                */
+        && (buf[10] <= 100)                         /* bMax_brightness (%)      */
+        && (buf[11] <= buf[10]));                   /* bMin <= bMax             */
+}
+
 static void CommandGap()
 {
     std::this_thread::sleep_for(std::chrono::milliseconds(ITE82901_COMMAND_GAP_MS));
@@ -190,6 +211,129 @@ bool ITE82901Controller::SetLedParameter(const ite82901_led_parameter* param)
     if(!ok)
     {
         LOG_ERROR("[ITE82901] Failed to set LED parameter %d (mode %d) via %s", param_index, param->mode, device_path.c_str());
+    }
+
+    return(ok);
+}
+
+/*---------------------------------------------------------*\
+| Read gLedParameter[N] back from the FW                    |
+|                                                           |
+|   [0xE0][protocol]   same prefix as every update          |
+|   [0xE1][0x01]       normal mode (reads need it)          |
+|   write [0x20+N], repeated start, read                    |
+|                                                           |
+|   The read framing is not documented, so 33 bytes are     |
+|   read and both layouts are checked:                      |
+|     SMBus block read : [count=0x20][32 bytes]             |
+|     raw I2C read     : [32 bytes]                         |
+\*---------------------------------------------------------*/
+bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
+{
+    std::lock_guard<std::mutex> lock(io_mutex);
+
+    if(!SetProtocolLocked())
+    {
+        return(false);
+    }
+
+    if(!SendByteLocked(ITE82901_CMD_SET_RW_MODE, ITE82901_RW_MODE_NORMAL))
+    {
+        LOG_ERROR("[ITE82901] Set normal read/write mode (0xE1 0x01) failed via %s", device_path.c_str());
+        return(false);
+    }
+    CommandGap();
+
+    unsigned char cmd = (unsigned char)(ITE82901_CMD_LED_PARAMETER_0 + param_index);
+    unsigned char buf[ITE82901_PARAMETER_SIZE + 1];
+    int           count = 0;
+    bool          ok    = false;
+
+    for(int attempt = 0; attempt < ITE82901_READ_RETRIES && !ok; attempt++)
+    {
+        memset(buf, 0, sizeof(buf));
+        ok = WriteReadLocked(&cmd, 1, buf, sizeof(buf), &count);
+        CommandGap();
+    }
+
+    if(!ok)
+    {
+        LOG_ERROR("[ITE82901] Read of parameter %d (0x%02X) failed via %s", param_index, cmd, device_path.c_str());
+        return(false);
+    }
+
+    /*-----------------------------------------------------*\
+    | Log the raw bytes for checking with a logic analyzer  |
+    \*-----------------------------------------------------*/
+    char hex[3 * sizeof(buf) + 1];
+    int  pos = 0;
+
+    for(int i = 0; i < count && i < (int)sizeof(buf); i++)
+    {
+        pos += snprintf(&hex[pos], sizeof(hex) - pos, "%02X ", buf[i]);
+    }
+
+    LOG_INFO("[ITE82901] Read 0x%02X returned %d byte(s): %s", cmd, count, hex);
+
+    const unsigned char* data = NULL;
+
+    if(count >= ITE82901_PARAMETER_SIZE + 1 && buf[0] == ITE82901_PARAMETER_SIZE && LooksLikeParameter(&buf[1]))
+    {
+        data = &buf[1];
+        LOG_INFO("[ITE82901] Read-back format: SMBus block (count byte + 32 bytes)");
+    }
+    else if(count >= ITE82901_PARAMETER_SIZE && LooksLikeParameter(&buf[0]))
+    {
+        data = &buf[0];
+        LOG_INFO("[ITE82901] Read-back format: raw 32 bytes");
+    }
+    else
+    {
+        LOG_ERROR("[ITE82901] Read-back data does not look like a gLedParameter, ignoring");
+        return(false);
+    }
+
+    memset(param, 0, sizeof(*param));
+
+    param->mode             = data[9];
+    param->max_brightness   = data[10];
+    param->min_brightness   = data[11];
+    param->color0           = GetLE32(&data[12]);
+    param->color1           = GetLE32(&data[16]);
+
+    for(int i = 0; i < 4; i++)
+    {
+        param->time_base[i]  = GetLE16(&data[20 + (2 * i)]);
+        param->ctrl_value[i] = data[28 + i];
+    }
+
+    return(true);
+}
+
+/*---------------------------------------------------------*\
+| Save parameters as the FW default (cmd 0x5E, no data)     |
+\*---------------------------------------------------------*/
+bool ITE82901Controller::SaveToFlash()
+{
+    std::lock_guard<std::mutex> lock(io_mutex);
+
+    bool ok = SetProtocolLocked();
+
+    if(ok)
+    {
+        unsigned char packet[1] = { ITE82901_CMD_SAVE };
+
+        ok = WriteLocked(packet, sizeof(packet));
+        CommandGap();
+    }
+
+    if(ok)
+    {
+        LOG_INFO("[ITE82901] Saved current effect as default (0x5E) via %s", device_path.c_str());
+    }
+    else
+    {
+        LOG_ERROR("[ITE82901] Save (0x5E) failed via %s", device_path.c_str());
     }
 
     return(ok);
@@ -373,4 +517,29 @@ bool ITE82901Controller::WriteLocked(const unsigned char* data, int len)
     \*-----------------------------------------------------*/
     CloseLocked();
     return(false);
+}
+
+/*---------------------------------------------------------*\
+| Combined write + repeated-start read through the driver's |
+| IOCTL_SPBTESTTOOL_WRITEREAD (input = write, output = read)|
+\*---------------------------------------------------------*/
+bool ITE82901Controller::WriteReadLocked(unsigned char* write_data, int write_len, unsigned char* read_data, int read_len, int* read_count)
+{
+    *read_count = 0;
+
+    if(!OpenLocked())
+    {
+        return(false);
+    }
+
+    DWORD transferred = 0;
+
+    if(!Overlapped(ITE_SPB_OP_IOCTL, ITE_SPB_IOCTL_WRITEREAD, write_data, (DWORD)write_len, read_data, (DWORD)read_len, &transferred))
+    {
+        return(false);
+    }
+
+    *read_count = (int)transferred;
+
+    return(transferred > 0);
 }
