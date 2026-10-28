@@ -220,13 +220,10 @@ bool ITE82901Controller::SetLedParameter(const ite82901_led_parameter* param)
 | Read gLedParameter[N] back from the FW                    |
 |                                                           |
 |   [0xE0][protocol]   same prefix as every update          |
-|   [0xE1][0x01]       normal mode (reads need it)          |
-|   write [0x20+N], repeated start, read                    |
+|   write [0x20+N], repeated start, read 32 bytes           |
 |                                                           |
-|   The read framing is not documented, so 33 bytes are     |
-|   read and both layouts are checked:                      |
-|     SMBus block read : [count=0x20][32 bytes]             |
-|     raw I2C read     : [32 bytes]                         |
+|   No 0xE1 is sent. The 32 bytes are used directly as the  |
+|   gLedParameter image (same layout as the write).         |
 \*---------------------------------------------------------*/
 bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
 {
@@ -237,15 +234,8 @@ bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
         return(false);
     }
 
-    if(!SendByteLocked(ITE82901_CMD_SET_RW_MODE, ITE82901_RW_MODE_NORMAL))
-    {
-        LOG_ERROR("[ITE82901] Set normal read/write mode (0xE1 0x01) failed via %s", device_path.c_str());
-        return(false);
-    }
-    CommandGap();
-
     unsigned char cmd = (unsigned char)(ITE82901_CMD_LED_PARAMETER_0 + param_index);
-    unsigned char buf[ITE82901_PARAMETER_SIZE + 1];
+    unsigned char buf[ITE82901_PARAMETER_SIZE];
     int           count = 0;
     bool          ok    = false;
 
@@ -268,6 +258,8 @@ bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
     char hex[3 * sizeof(buf) + 1];
     int  pos = 0;
 
+    hex[0] = '\0';
+
     for(int i = 0; i < count && i < (int)sizeof(buf); i++)
     {
         pos += snprintf(&hex[pos], sizeof(hex) - pos, "%02X ", buf[i]);
@@ -275,19 +267,31 @@ bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
 
     LOG_INFO("[ITE82901] Read 0x%02X returned %d byte(s): %s", cmd, count, hex);
 
-    const unsigned char* data = NULL;
+    if(count < ITE82901_PARAMETER_SIZE)
+    {
+        LOG_ERROR("[ITE82901] Read-back too short (%d of %d bytes), ignoring", count, ITE82901_PARAMETER_SIZE);
+        return(false);
+    }
 
-    if(count >= ITE82901_PARAMETER_SIZE + 1 && buf[0] == ITE82901_PARAMETER_SIZE && LooksLikeParameter(&buf[1]))
+    /*-----------------------------------------------------*\
+    | All 0x00 / all 0xFF means the FW returned no data     |
+    \*-----------------------------------------------------*/
+    bool all_00 = true;
+    bool all_ff = true;
+
+    for(int i = 0; i < ITE82901_PARAMETER_SIZE; i++)
     {
-        data = &buf[1];
-        LOG_INFO("[ITE82901] Read-back format: SMBus block (count byte + 32 bytes)");
+        all_00 = all_00 && (buf[i] == 0x00);
+        all_ff = all_ff && (buf[i] == 0xFF);
     }
-    else if(count >= ITE82901_PARAMETER_SIZE && LooksLikeParameter(&buf[0]))
+
+    if(all_00 || all_ff)
     {
-        data = &buf[0];
-        LOG_INFO("[ITE82901] Read-back format: raw 32 bytes");
+        LOG_ERROR("[ITE82901] Read-back is all 0x%s: FW returned no parameter data, ignoring", all_00 ? "00" : "FF");
+        return(false);
     }
-    else
+
+    if(!LooksLikeParameter(buf))
     {
         LOG_ERROR("[ITE82901] Read-back data does not look like a gLedParameter, ignoring");
         return(false);
@@ -295,16 +299,16 @@ bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
 
     memset(param, 0, sizeof(*param));
 
-    param->mode             = data[9];
-    param->max_brightness   = data[10];
-    param->min_brightness   = data[11];
-    param->color0           = GetLE32(&data[12]);
-    param->color1           = GetLE32(&data[16]);
+    param->mode             = buf[9];
+    param->max_brightness   = buf[10];
+    param->min_brightness   = buf[11];
+    param->color0           = GetLE32(&buf[12]);
+    param->color1           = GetLE32(&buf[16]);
 
     for(int i = 0; i < 4; i++)
     {
-        param->time_base[i]  = GetLE16(&data[20 + (2 * i)]);
-        param->ctrl_value[i] = data[28 + i];
+        param->time_base[i]  = GetLE16(&buf[20 + (2 * i)]);
+        param->ctrl_value[i] = buf[28 + i];
     }
 
     return(true);
