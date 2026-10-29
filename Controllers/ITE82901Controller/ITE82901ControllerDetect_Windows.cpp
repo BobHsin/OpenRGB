@@ -22,6 +22,7 @@
 #define ITE82901_DEFAULT_UID            0
 #define ITE82901_DEFAULT_LED_MASK       "0xFFFFFFFFFFFFFFFF"    /* lZone_Sel: all LEDs  */
 #define ITE82901_DEFAULT_PARAMETER      0                       /* gLedParameter[0]     */
+#define ITE82901_DEFAULT_STRIP0_LEDS    32                      /* Direct mode length   */
 #define ITE82901_DEFAULT_I2C_PROTOCOL   true                    /* 0xE0 + data, [cmd][data] */
 
 /*---------------------------------------------------------*\
@@ -92,6 +93,7 @@ static json MakeDefaultDevice()
     device["led_mask"]          = ITE82901_DEFAULT_LED_MASK;
     device["parameter_index"]   = ITE82901_DEFAULT_PARAMETER;
     device["i2c_protocol"]      = ITE82901_DEFAULT_I2C_PROTOCOL;
+    device["strip0_led_count"]  = ITE82901_DEFAULT_STRIP0_LEDS;
 
     return(device);
 }
@@ -175,6 +177,13 @@ DetectedControllers DetectITE82901Controllers()
         unsigned long long  led_mask    = ReadU64Setting   (dev, "led_mask",        0xFFFFFFFFFFFFFFFFULL);
         int                 param_index = ReadIntSetting   (dev, "parameter_index", ITE82901_DEFAULT_PARAMETER);
         bool                i2c_mode    = ReadBoolSetting  (dev, "i2c_protocol",    ITE82901_DEFAULT_I2C_PROTOCOL);
+        int                 strip_leds  = ReadIntSetting   (dev, "strip0_led_count", ITE82901_DEFAULT_STRIP0_LEDS);
+
+        if(strip_leds < 1 || strip_leds > ITE82901_STRIP_MAX_LEDS)
+        {
+            LOG_ERROR("[ITE82901] strip0_led_count %d out of range (1-%d) for \"%s\", using %d", strip_leds, ITE82901_STRIP_MAX_LEDS, name.c_str(), ITE82901_DEFAULT_STRIP0_LEDS);
+            strip_leds = ITE82901_DEFAULT_STRIP0_LEDS;
+        }
 
         if(param_index < 0 || param_index >= ITE82901_PARAMETER_COUNT)
         {
@@ -182,7 +191,7 @@ DetectedControllers DetectITE82901Controllers()
             param_index = 0;
         }
 
-        ITE82901Controller* controller = new ITE82901Controller(name, driver_name, uid, led_mask, param_index, i2c_mode);
+        ITE82901Controller* controller = new ITE82901Controller(name, driver_name, uid, led_mask, param_index, i2c_mode, strip_leds);
 
         /*-------------------------------------------------*\
         | Driver not installed / device not present: skip   |

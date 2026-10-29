@@ -15,6 +15,9 @@
 #include <thread>
 #include "ITE82901Controller_Windows.h"
 #include "LogManager.h"
+#include <mmsystem.h>
+
+#pragma comment(lib, "winmm")
 
 /*---------------------------------------------------------*\
 | Overlapped operation types                                |
@@ -72,6 +75,25 @@ static bool LooksLikeParameter(const unsigned char* buf)
         && (buf[11] <= buf[10]));                   /* bMin <= bMax             */
 }
 
+static unsigned long long NowMs()
+{
+    return((unsigned long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+/*---------------------------------------------------------*\
+| 0x34 size code for a strip length                         |
+|   0: 32, 1: 64, 2: 256, 3: 512, 4: 1024 LEDs              |
+\*---------------------------------------------------------*/
+static unsigned char StripSizeCode(int leds)
+{
+    if(leds <= 32)  return(0);
+    if(leds <= 64)  return(1);
+    if(leds <= 256) return(2);
+    if(leds <= 512) return(3);
+    return(4);
+}
+
 static void CommandGap()
 {
     std::this_thread::sleep_for(std::chrono::milliseconds(ITE82901_COMMAND_GAP_MS));
@@ -84,7 +106,8 @@ ITE82901Controller::ITE82901Controller
     int                 driver_uid,
     unsigned long long  zone_mask,
     int                 parameter_index,
-    bool                i2c_protocol
+    bool                i2c_protocol,
+    int                 strip0_led_count
     )
 {
     char path[128];
@@ -96,6 +119,20 @@ ITE82901Controller::ITE82901Controller
     led_zone_mask   = zone_mask;
     param_index     = parameter_index;
     use_i2c_protocol = i2c_protocol;
+    strip_led_count  = strip0_led_count;
+    direct_enabled   = false;
+    timer_raised     = false;
+    last_protocol_ms = 0;
+
+    if(strip_led_count < 1)
+    {
+        strip_led_count = 1;
+    }
+
+    if(strip_led_count > ITE82901_STRIP_MAX_LEDS)
+    {
+        strip_led_count = ITE82901_STRIP_MAX_LEDS;
+    }
     dev_handle      = INVALID_HANDLE_VALUE;
 
     if(param_index < 0 || param_index >= ITE82901_PARAMETER_COUNT)
@@ -107,7 +144,19 @@ ITE82901Controller::ITE82901Controller
 ITE82901Controller::~ITE82901Controller()
 {
     std::lock_guard<std::mutex> lock(io_mutex);
+
+    if(timer_raised)
+    {
+        timeEndPeriod(1);
+        timer_raised = false;
+    }
+
     CloseLocked();
+}
+
+int ITE82901Controller::GetStripLedCount()
+{
+    return(strip_led_count);
 }
 
 bool ITE82901Controller::Open()
@@ -148,6 +197,11 @@ bool ITE82901Controller::SetProtocolLocked()
 
     bool ok = SendByteLocked(ITE82901_CMD_SET_PROTOCOL, ITE82901_SET_PROTOCOL_DATA);
     CommandGap();
+
+    if(ok)
+    {
+        last_protocol_ms = NowMs();
+    }
 
     if(!ok)
     {
@@ -195,6 +249,14 @@ bool ITE82901Controller::SetLedParameter(const ite82901_led_parameter* param)
     std::lock_guard<std::mutex> lock(io_mutex);
 
     bool ok = SetProtocolLocked();
+
+    /*-----------------------------------------------------*\
+    | Hardware effects need Direct mode turned off first    |
+    \*-----------------------------------------------------*/
+    if(ok && direct_enabled)
+    {
+        ok = SetDirectModeLocked(false);
+    }
 
     if(ok)
     {
@@ -344,16 +406,142 @@ bool ITE82901Controller::SaveToFlash()
 }
 
 /*---------------------------------------------------------*\
+| Direct mode on strip-0                                    |
+|                                                           |
+|   On : [0xE0][protocol] [0x34][size code] [0x32][0x01]    |
+|   Off: [0x32][0x00]                                       |
+|   Both wait ITE82901_DIRECT_SETTLE_MS after 0x32.         |
+\*---------------------------------------------------------*/
+bool ITE82901Controller::SetDirectMode(bool enable)
+{
+    std::lock_guard<std::mutex> lock(io_mutex);
+
+    if(enable && !SetProtocolLocked())
+    {
+        return(false);
+    }
+
+    return(SetDirectModeLocked(enable));
+}
+
+bool ITE82901Controller::SetDirectModeLocked(bool enable)
+{
+    bool ok = true;
+
+    if(enable)
+    {
+        ok = SendByteLocked(ITE82901_CMD_STRIP_LENGTH, StripSizeCode(strip_led_count));
+        CommandGap();
+    }
+
+    if(ok)
+    {
+        ok = SendByteLocked(ITE82901_CMD_DIRECT_ENABLE, enable ? ITE82901_DIRECT_STRIP0_BIT : 0x00);
+        std::this_thread::sleep_for(std::chrono::milliseconds(ITE82901_DIRECT_SETTLE_MS));
+    }
+
+    if(!ok)
+    {
+        LOG_ERROR("[ITE82901] %s Direct mode failed via %s", enable ? "Enable" : "Disable", device_path.c_str());
+        return(false);
+    }
+
+    direct_enabled = enable;
+
+    /*-----------------------------------------------------*\
+    | 1 ms timer resolution only while streaming, so the    |
+    | 5 ms packet gap is ~5 ms instead of ~16 ms            |
+    \*-----------------------------------------------------*/
+    if(enable && !timer_raised)
+    {
+        timeBeginPeriod(1);
+        timer_raised = true;
+    }
+    else if(!enable && timer_raised)
+    {
+        timeEndPeriod(1);
+        timer_raised = false;
+    }
+
+    LOG_INFO("[ITE82901] Direct mode %s (strip-0, %d LEDs)", enable ? "on" : "off", strip_led_count);
+    return(true);
+}
+
+/*---------------------------------------------------------*\
+| Send RGB data to strip-0 (cmd 0x58)                       |
+|   [0x58][offset lo][offset hi][length][R G B R G B ...]   |
+|   offset and length are in bytes, max 57 data bytes       |
+\*---------------------------------------------------------*/
+bool ITE82901Controller::SetStripColors(const unsigned char* rgb, int led_count)
+{
+    std::lock_guard<std::mutex> lock(io_mutex);
+
+    if(!direct_enabled)
+    {
+        return(false);
+    }
+
+    if(led_count > strip_led_count)
+    {
+        led_count = strip_led_count;
+    }
+
+    /*-----------------------------------------------------*\
+    | Refresh the protocol now and then instead of on every |
+    | frame, in case the FW was reset (e.g. sleep/resume)   |
+    \*-----------------------------------------------------*/
+    if(NowMs() - last_protocol_ms >= ITE82901_PROTOCOL_REFRESH_MS)
+    {
+        if(!SetProtocolLocked())
+        {
+            return(false);
+        }
+    }
+
+    int total_bytes = led_count * 3;
+    int sent        = 0;
+
+    while(sent < total_bytes)
+    {
+        int           chunk = total_bytes - sent;
+        unsigned char data[3 + ITE82901_DIRECT_MAX_DATA];
+
+        if(chunk > ITE82901_DIRECT_MAX_DATA)
+        {
+            chunk = ITE82901_DIRECT_MAX_DATA;
+        }
+
+        data[0] = (unsigned char)(sent & 0xFF);
+        data[1] = (unsigned char)((sent >> 8) & 0xFF);
+        data[2] = (unsigned char)chunk;
+        memcpy(&data[3], &rgb[sent], chunk);
+
+        bool ok = SendBlockLocked(ITE82901_CMD_DIRECT_STRIP0, data, 3 + chunk);
+        CommandGap();
+
+        if(!ok)
+        {
+            LOG_ERROR("[ITE82901] Direct data (0x58, offset %d) failed via %s", sent, device_path.c_str());
+            return(false);
+        }
+
+        sent += chunk;
+    }
+
+    return(true);
+}
+
+/*---------------------------------------------------------*\
 | Command framing                                           |
 |   I2C (default)     : [cmd][data...]                      |
 |   SMBus block write : [cmd][count][data...]               |
 \*---------------------------------------------------------*/
 bool ITE82901Controller::SendBlockLocked(unsigned char cmd, const unsigned char* data, int len)
 {
-    unsigned char packet[2 + ITE82901_PARAMETER_SIZE];
+    unsigned char packet[2 + ITE82901_MAX_BLOCK];
     int           pos = 0;
 
-    if(len < 0 || len > ITE82901_PARAMETER_SIZE)
+    if(len < 0 || len > ITE82901_MAX_BLOCK)
     {
         return(false);
     }

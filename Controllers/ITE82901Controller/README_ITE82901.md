@@ -15,6 +15,9 @@
 | `0xE0` | 1 byte（目前 0x00） | Set protocol（每次更新燈效前都會送出；值定義在 `ITE82901_SET_PROTOCOL_DATA`） |
 | `0x20+N` | 32 bytes | 寫入 gLedParameter[N] |
 | `0x28` | 1 byte（bitN） | 套用 parameter N |
+| `0x32` | 1 byte | Direct 模式開關（`01` = strip-0 開啟，`00` = 關閉） |
+| `0x34` | 1 byte | strip-0 長度代碼（0: 32, 1: 64, 2: 256, 3: 512, 4: 1024 顆） |
+| `0x58` | 3 + 最多 57 bytes | Direct 模式下 strip-0 每顆 LED 的 RGB |
 | `0x5E` | 無 | 將目前燈效存成 FW 預設燈效（OpenRGB 的「Save to Device」） |
 | `0x20+N`（讀） | 讀 32 bytes | 啟動時讀回目前的預設燈效 |
 
@@ -26,6 +29,35 @@
 [dwColor0 x4][dwColor1 x4][wTime_base0-3 x8][bCtrl_value0-3 x4]
 [0x28][1<<N]
 ```
+
+### Direct 模式（音樂燈效等軟體燈效）
+
+OpenRGB 的「Direct」模式會逐顆控制 strip-0 的 LED，OpenRGB Effects 外掛的音樂燈效（Audio Visualizer、Audio Sync 等）就是透過它運作。
+
+切換到 Direct 時：
+
+```
+[0xE0][0x00]
+[0x34][長度代碼]
+[0x32][0x01]        之後等待 50 ms
+```
+
+每一個畫面（顏色順序 RGB，每顆 3 bytes，每筆最多 19 顆）：
+
+```
+[0x58][offset 低][offset 高][長度][R G B R G B ...]     offset、長度單位是 byte
+```
+
+切回任何內建燈效前會先關閉 Direct：
+
+```
+[0x32][0x00]        之後等待 50 ms
+```
+
+- 每筆封包之後一樣間隔 5 ms。Direct 模式期間會把 Windows 計時器精度暫時調成 1 ms，讓 5 ms 的間隔更準確；離開 Direct 後恢復。
+- Direct 期間每秒重送一次 `E0 00`（不是每個畫面都送），避免 FW 重置後協定不一致。
+- Direct 模式沒有「Save To Device」。
+- LED 數量由 `strip0_led_count` 設定（預設 32），修改後按 Rescan Devices 生效。
 
 ### 存檔
 
@@ -61,6 +93,7 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 
 | OpenRGB 模式 | bMode_Sel | 可調整 | 參數 |
 |---|---|---|---|
+| Direct | –（`0x32` / `0x58`） | 每顆 LED 顏色（由 OpenRGB 或 Effects 外掛控制） | 見「Direct 模式」 |
 | Off | 1 Static | – | 黑色、亮度 0% |
 | Static | 1 Static | 顏色、亮度 | bCtrl_value0 = 0 |
 | Breathing | 2 Pulse | 顏色/隨機、速度、亮度 | time0 = time1 = 2000→400 ms，time2 = 200 ms |
@@ -89,7 +122,8 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
             "uid": 0,
             "led_mask": "0xFFFFFFFFFFFFFFFF",
             "parameter_index": 0,
-            "i2c_protocol": true
+            "i2c_protocol": true,
+            "strip0_led_count": 32
         }
     ]
 }
@@ -97,6 +131,7 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 
 - `driver_name` + `uid`：裝置路徑，例如 `\\.\ITE8853_0`
 - `led_mask`：lZone_Sel，bit x = LED x
+- `strip0_led_count`：strip-0 的 LED 數量（1～1024），Direct 模式使用
 - `parameter_index`：使用的 gLedParameter 編號（0～7）
 - `i2c_protocol`：`true`（預設）= 先送 `E0 00`，封包為 `[cmd][data]`；`false` = 不切換協定，封包為 SMBus block write `[cmd][count][data]`
 - 上一版寫入的 `smbus_block` 欄位會自動移除

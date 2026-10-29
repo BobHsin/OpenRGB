@@ -8,6 +8,8 @@
 \*---------------------------------------------------------*/
 
 #include <cstring>
+#include <string>
+#include <vector>
 #include "RGBController_ITE82901_Windows.h"
 #include "LogManager.h"
 
@@ -16,14 +18,16 @@
     @category Motherboard
     @type I2C
     @save :white_check_mark:
-    @direct :x:
+    @direct :white_check_mark:
     @effects :white_check_mark:
     @detectors DetectITE82901Controllers
     @comment Uses the ITE SPB peripheral kernel driver (ITE8853_<UID>)
         to reach the PCH I2C controller. LED effects use the IT8297 /
         IT8237 LED parameter protocol, raw I2C framing (0xE0 0x00, then
         command 0x20+N, apply 0x28, save 0x5E). The stored effect is
-        read back with 0x20 at startup. Configure under "ITE82901Devices" in OpenRGB.json.
+        read back with 0x20 at startup. Direct mode streams RGB to
+        strip-0 with 0x58 (enable 0x32, length 0x34); the LED count is
+        "strip0_led_count" in OpenRGB.json. Configure under "ITE82901Devices" in OpenRGB.json.
 \*-------------------------------------------------------------------*/
 
 /*---------------------------------------------------------*\
@@ -31,16 +35,17 @@
 \*---------------------------------------------------------*/
 enum
 {
-    ITE82901_UI_OFF             = 0,
-    ITE82901_UI_STATIC          = 1,
-    ITE82901_UI_BREATHING       = 2,
-    ITE82901_UI_FLASHING        = 3,
-    ITE82901_UI_DOUBLE_FLASH    = 4,
-    ITE82901_UI_SPECTRUM_CYCLE  = 5,
-    ITE82901_UI_METEOR          = 6,
-    ITE82901_UI_RAINBOW_WAVE    = 7,
-    ITE82901_UI_RIPPLE          = 8,
-    ITE82901_UI_WAVE            = 9,
+    ITE82901_UI_DIRECT          = 0,
+    ITE82901_UI_OFF             = 1,
+    ITE82901_UI_STATIC          = 2,
+    ITE82901_UI_BREATHING       = 3,
+    ITE82901_UI_FLASHING        = 4,
+    ITE82901_UI_DOUBLE_FLASH    = 5,
+    ITE82901_UI_SPECTRUM_CYCLE  = 6,
+    ITE82901_UI_METEOR          = 7,
+    ITE82901_UI_RAINBOW_WAVE    = 8,
+    ITE82901_UI_RIPPLE          = 9,
+    ITE82901_UI_WAVE            = 10,
 };
 
 /*---------------------------------------------------------*\
@@ -168,6 +173,13 @@ RGBController_ITE82901::RGBController_ITE82901(ITE82901Controller* controller_pt
     const unsigned int color_flags  = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
     const unsigned int effect_flags = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
 
+    /*-----------------------------------------------------*\
+    | Direct: per-LED colors streamed by OpenRGB / Effects  |
+    | plugin (e.g. audio effects). Not saved to the FW.     |
+    \*-----------------------------------------------------*/
+    AddMode(modes, "Direct",          ITE82901_UI_DIRECT,         MODE_FLAG_HAS_PER_LED_COLOR,                                          MODE_COLORS_PER_LED,       0);
+    modes.back().flags &= ~MODE_FLAG_MANUAL_SAVE;
+
     AddMode(modes, "Off",             ITE82901_UI_OFF,            0,                                                                    MODE_COLORS_NONE,          0);
     AddMode(modes, "Static",          ITE82901_UI_STATIC,         color_flags,                                                          MODE_COLORS_MODE_SPECIFIC, 1);
     AddMode(modes, "Breathing",       ITE82901_UI_BREATHING,      color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
@@ -200,30 +212,50 @@ RGBController_ITE82901::~RGBController_ITE82901()
 void RGBController_ITE82901::SetupZones()
 {
     /*-----------------------------------------------------*\
-    | One parameter applies to every LED in lZone_Sel, so   |
-    | expose a single zone with a single logical LED        |
+    | Strip-0 as one linear zone. Hardware effects apply to |
+    | the LEDs in lZone_Sel; Direct mode drives each LED.   |
     \*-----------------------------------------------------*/
-    zone all_zone;
-    all_zone.name       = "All LEDs";
-    all_zone.type       = ZONE_TYPE_SINGLE;
-    all_zone.leds_min   = 1;
-    all_zone.leds_max   = 1;
-    all_zone.leds_count = 1;
-    zones.push_back(all_zone);
+    unsigned int led_count = (unsigned int)controller->GetStripLedCount();
 
-    led all_led;
-    all_led.name        = "All LEDs";
-    all_led.value       = 0;
-    leds.push_back(all_led);
+    zone strip_zone;
+    strip_zone.name       = "Strip 0";
+    strip_zone.type       = ZONE_TYPE_LINEAR;
+    strip_zone.leds_min   = led_count;
+    strip_zone.leds_max   = led_count;
+    strip_zone.leds_count = led_count;
+    zones.push_back(strip_zone);
+
+    for(unsigned int led_idx = 0; led_idx < led_count; led_idx++)
+    {
+        led new_led;
+        new_led.name  = "Strip 0 LED " + std::to_string(led_idx + 1);
+        new_led.value = led_idx;
+        leds.push_back(new_led);
+    }
 
     SetupColors();
 }
 
+/*---------------------------------------------------------*\
+| Direct mode: send every LED as R, G, B bytes (strip RGB)  |
+\*---------------------------------------------------------*/
 void RGBController_ITE82901::DeviceUpdateLEDs()
 {
-    /*-----------------------------------------------------*\
-    | No per-LED (Direct) mode; colors come from the mode   |
-    \*-----------------------------------------------------*/
+    if(modes[active_mode].value != ITE82901_UI_DIRECT)
+    {
+        return;
+    }
+
+    std::vector<unsigned char> rgb(colors.size() * 3);
+
+    for(std::size_t i = 0; i < colors.size(); i++)
+    {
+        rgb[(i * 3) + 0] = RGBGetRValue(colors[i]);
+        rgb[(i * 3) + 1] = RGBGetGValue(colors[i]);
+        rgb[(i * 3) + 2] = RGBGetBValue(colors[i]);
+    }
+
+    controller->SetStripColors(rgb.data(), (int)colors.size());
 }
 
 void RGBController_ITE82901::DeviceUpdateZoneLEDs(int /*zone*/)
@@ -243,6 +275,19 @@ void RGBController_ITE82901::DeviceUpdateSingleLED(int /*led*/)
 \*---------------------------------------------------------*/
 void RGBController_ITE82901::DeviceUpdateMode()
 {
+    /*-----------------------------------------------------*\
+    | Direct: enable per-LED control, then push the colors  |
+    \*-----------------------------------------------------*/
+    if(modes[active_mode].value == ITE82901_UI_DIRECT)
+    {
+        if(controller->SetDirectMode(true))
+        {
+            DeviceUpdateLEDs();
+        }
+
+        return;
+    }
+
     const mode&             m      = modes[active_mode];
     ite82901_led_parameter  p;
     bool                    random = (m.color_mode == MODE_COLORS_RANDOM);
