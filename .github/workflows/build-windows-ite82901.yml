@@ -6,7 +6,6 @@
 #                                                           #
 # Run manually from the Actions tab, or on every push.      #
 # Result: "OpenRGB_Windows_64_ITE82901" artifact (zip).     #
-# ITE 82901 uses Windows.Devices.I2c directly (no DLL).    #
 #-----------------------------------------------------------#
 name: Build OpenRGB Windows 64 (ITE82901)
 
@@ -30,7 +29,9 @@ jobs:
           $files = @(
             "Controllers/ITE82901Controller/ITE82901ControllerDetect_Windows.cpp",
             "Controllers/ITE82901Controller/ITE82901Controller_Windows.cpp",
-            "Controllers/ITE82901Controller/RGBController_ITE82901_Windows.cpp"
+            "Controllers/ITE82901Controller/ITE82901Controller_Windows.h",
+            "Controllers/ITE82901Controller/RGBController_ITE82901_Windows.cpp",
+            "Controllers/ITE82901Controller/RGBController_ITE82901_Windows.h"
           )
           $missing = $files | Where-Object { -not (Test-Path $_) }
           if ($missing) {
@@ -49,6 +50,7 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
+          modules: 'qt5compat'
           cache: true
 
       - name: Set up MSVC 2022 x64 environment
@@ -71,6 +73,22 @@ jobs:
       - name: Deploy Qt DLLs (windeployqt)
         shell: cmd
         run: windeployqt --no-quick-import --no-translations --no-system-d3d-compiler --no-compiler-runtime --no-opengl-sw --no-network .\release\
+
+      - name: Add Qt modules needed by OpenRGB Effects Plugin
+        shell: pwsh
+        run: |
+          # OpenRGBEffectsPlugin.dll imports Qt6OpenGL.dll and Qt6Core5Compat.dll,
+          # which OpenRGB itself does not use, so windeployqt does not copy them.
+          $qtbin = $null
+          if ($env:QT_ROOT_DIR) { $qtbin = Join-Path $env:QT_ROOT_DIR "bin" }
+          if (-not $qtbin -or -not (Test-Path $qtbin)) { $qtbin = Split-Path (Get-Command qmake).Source }
+          Write-Host "Qt bin directory: $qtbin"
+          foreach ($dll in @("Qt6OpenGL.dll", "Qt6Core5Compat.dll")) {
+            $src = Join-Path $qtbin $dll
+            if (-not (Test-Path $src)) { Write-Error "$dll not found in $qtbin"; exit 1 }
+            Copy-Item $src "release\" -Force
+            Write-Host "Copied $dll"
+          }
 
       - name: Add MSVC runtime and package
         shell: pwsh
