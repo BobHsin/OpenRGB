@@ -41,7 +41,7 @@ enum
     ITE82901_CMD_APPLY                  = 0x28,     /* 1 B: bitN=1 applies parameter N      */
     ITE82901_CMD_DIRECT_ENABLE          = 0x32,     /* 1 B: bit0 strip-0, bit1 strip-1, bit2 PWM */
     ITE82901_CMD_STRIP_LENGTH           = 0x34,     /* 1 B: [3:0] strip-0, [7:4] strip-1 size code */
-    ITE82901_CMD_DIRECT_STRIP0          = 0x58,     /* [off lo][off hi][len][data <= 57 B]  */
+    ITE82901_CMD_DIRECT_STRIP0          = 0x58,     /* [R G B R G B ...] whole strip-0      */
     ITE82901_CMD_SAVE                   = 0x5E,     /* 0 B: save parameters as default      */
     ITE82901_CMD_SET_PROTOCOL           = 0xE0,     /* 1 B: 1 = I2C, 0 = SMBus (FW default) */
     ITE82901_CMD_SET_RW_MODE            = 0xE1,     /* 1 B: 0 = fast write only, 1 = normal */
@@ -75,12 +75,16 @@ enum
 | Direct (per-LED) control of strip-0                       |
 \*---------------------------------------------------------*/
 #define ITE82901_DIRECT_STRIP0_BIT          0x01    /* 0x32 bit0                            */
-#define ITE82901_DIRECT_MAX_DATA            57      /* Max data bytes per 0x58 packet       */
-#define ITE82901_DIRECT_LEDS_PER_PACKET     19      /* 57 / 3 bytes per LED (RGB)           */
 #define ITE82901_DIRECT_SETTLE_MS           50      /* Wait after 0x32 (as Gigabyte IT8297) */
 #define ITE82901_PROTOCOL_REFRESH_MS        1000    /* Resend 0xE0 during Direct this often */
-#define ITE82901_STRIP_MAX_LEDS             1024
-#define ITE82901_MAX_BLOCK                  64      /* Largest command payload              */
+
+/*---------------------------------------------------------*\
+| 0x58 carries the whole strip in one packet (no offset),   |
+| so it must fit the driver's 256-byte transfer buffer:     |
+| 1 cmd (+1 count in SMBus framing) + 3 x LEDs <= 256       |
+\*---------------------------------------------------------*/
+#define ITE82901_STRIP_MAX_LEDS             84
+#define ITE82901_MAX_BLOCK                  (ITE82901_STRIP_MAX_LEDS * 3)   /* 252 bytes    */
 
 /*---------------------------------------------------------*\
 | bMode_Sel values                                          |

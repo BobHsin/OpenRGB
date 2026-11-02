@@ -469,8 +469,8 @@ bool ITE82901Controller::SetDirectModeLocked(bool enable)
 
 /*---------------------------------------------------------*\
 | Send RGB data to strip-0 (cmd 0x58)                       |
-|   [0x58][offset lo][offset hi][length][R G B R G B ...]   |
-|   offset and length are in bytes, max 57 data bytes       |
+|   [0x58][R G B][R G B]...   all LEDs in one packet,       |
+|   no data offset / data length bytes                      |
 \*---------------------------------------------------------*/
 bool ITE82901Controller::SetStripColors(const unsigned char* rgb, int led_count)
 {
@@ -486,6 +486,11 @@ bool ITE82901Controller::SetStripColors(const unsigned char* rgb, int led_count)
         led_count = strip_led_count;
     }
 
+    if(led_count <= 0)
+    {
+        return(false);
+    }
+
     /*-----------------------------------------------------*\
     | Refresh the protocol now and then instead of on every |
     | frame, in case the FW was reset (e.g. sleep/resume)   |
@@ -498,37 +503,15 @@ bool ITE82901Controller::SetStripColors(const unsigned char* rgb, int led_count)
         }
     }
 
-    int total_bytes = led_count * 3;
-    int sent        = 0;
+    bool ok = SendBlockLocked(ITE82901_CMD_DIRECT_STRIP0, rgb, led_count * 3);
+    CommandGap();
 
-    while(sent < total_bytes)
+    if(!ok)
     {
-        int           chunk = total_bytes - sent;
-        unsigned char data[3 + ITE82901_DIRECT_MAX_DATA];
-
-        if(chunk > ITE82901_DIRECT_MAX_DATA)
-        {
-            chunk = ITE82901_DIRECT_MAX_DATA;
-        }
-
-        data[0] = (unsigned char)(sent & 0xFF);
-        data[1] = (unsigned char)((sent >> 8) & 0xFF);
-        data[2] = (unsigned char)chunk;
-        memcpy(&data[3], &rgb[sent], chunk);
-
-        bool ok = SendBlockLocked(ITE82901_CMD_DIRECT_STRIP0, data, 3 + chunk);
-        CommandGap();
-
-        if(!ok)
-        {
-            LOG_ERROR("[ITE82901] Direct data (0x58, offset %d) failed via %s", sent, device_path.c_str());
-            return(false);
-        }
-
-        sent += chunk;
+        LOG_ERROR("[ITE82901] Direct data (0x58, %d LEDs) failed via %s", led_count, device_path.c_str());
     }
 
-    return(true);
+    return(ok);
 }
 
 /*---------------------------------------------------------*\
