@@ -8,6 +8,14 @@
 | `RGBController_ITE82901_Windows.*` | OpenRGB UI 模式，轉換成 gLedParameter |
 | `ITE82901ControllerDetect_Windows.cpp` | 從 `OpenRGB.json` 讀取設定並建立裝置 |
 
+## 平台
+
+只在 **Windows x64** 編譯（ITE I2C device driver 為 x64）。Linux / macOS / FreeBSD 因檔名 `_Windows` 自動排除；
+Windows 32-bit 由 `OpenRGB.pro` 排除（見 `OpenRGB.pro.patch` 或 `OpenRGB.pro_snippet_ITE82901.txt`），
+同時在 x64 連結 `winmm`（Direct 模式用 `timeBeginPeriod` 提高計時精度）。
+
+沒有安裝 driver 的電腦：偵測時只寫 Verbose 等級的 log，也不會在 `OpenRGB.json` 寫入任何設定。
+
 ## 使用的指令
 
 | 指令 | 資料 | 用途 |
@@ -51,7 +59,7 @@ OpenRGB 的「Direct」模式會逐顆控制 strip-0 的 LED，OpenRGB Effects �
 因為沒有 offset，整條燈條必須在同一筆封包送出。driver 的傳輸緩衝區是 256 bytes，
 所以 strip-0 最多 84 顆 LED（1 + 84 × 3 = 253 bytes）。
 
-切回任何內建燈效前會先關閉 Direct：
+切回任何內建燈效前，以及在 Direct 模式下關閉 OpenRGB 時，都會先關閉 Direct：
 
 ```
 [0x32][0x00]        之後等待 50 ms

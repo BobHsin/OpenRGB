@@ -99,19 +99,22 @@ static json MakeDefaultDevice()
 }
 
 /*---------------------------------------------------------*\
-| Create default settings, or add missing keys to entries   |
-| written by earlier versions                               |
+| Build the settings, adding defaults / missing keys in     |
+| memory. They are only saved to OpenRGB.json once a device |
+| has actually been found (see DetectITE82901Controllers),  |
+| so PCs without the hardware are left untouched.           |
 \*---------------------------------------------------------*/
-static json LoadSettings(SettingsManager* settings_manager)
+static json LoadSettings(SettingsManager* settings_manager, bool* changed)
 {
     json settings = settings_manager->GetSettings(ITE82901_SETTINGS_KEY);
-    bool changed  = false;
+
+    *changed = false;
 
     if(!settings.contains("devices") || !settings["devices"].is_array())
     {
         settings["devices"] = json::array();
         settings["devices"].push_back(MakeDefaultDevice());
-        changed = true;
+        *changed = true;
     }
     else
     {
@@ -126,7 +129,7 @@ static json LoadSettings(SettingsManager* settings_manager)
             if(dev.contains("smbus_block"))
             {
                 dev.erase("smbus_block");
-                changed = true;
+                *changed = true;
             }
 
             for(json::iterator it = defaults.begin(); it != defaults.end(); ++it)
@@ -134,17 +137,10 @@ static json LoadSettings(SettingsManager* settings_manager)
                 if(!dev.contains(it.key()))
                 {
                     dev[it.key()] = it.value();
-                    changed = true;
+                    *changed = true;
                 }
             }
         }
-    }
-
-    if(changed)
-    {
-        settings_manager->SetSettings(ITE82901_SETTINGS_KEY, settings);
-        settings_manager->SaveSettings();
-        LOG_INFO("[ITE82901] Updated \"" ITE82901_SETTINGS_KEY "\" in OpenRGB.json");
     }
 
     return(settings);
@@ -162,7 +158,9 @@ DetectedControllers DetectITE82901Controllers()
 {
     DetectedControllers detected_controllers;
 
-    json settings = LoadSettings(ResourceManager::get()->GetSettingsManager());
+    SettingsManager*    settings_manager = ResourceManager::get()->GetSettingsManager();
+    bool                settings_changed = false;
+    json                settings         = LoadSettings(settings_manager, &settings_changed);
 
     for(const json& dev : settings["devices"])
     {
@@ -206,6 +204,17 @@ DetectedControllers DetectITE82901Controllers()
                  name.c_str(), controller->GetLocation().c_str(), led_mask);
 
         detected_controllers.push_back(new RGBController_ITE82901(controller));
+    }
+
+    /*-----------------------------------------------------*\
+    | Persist defaults / new keys only on PCs that have the |
+    | device                                                |
+    \*-----------------------------------------------------*/
+    if(settings_changed && !detected_controllers.empty())
+    {
+        settings_manager->SetSettings(ITE82901_SETTINGS_KEY, settings);
+        settings_manager->SaveSettings();
+        LOG_INFO("[ITE82901] Updated \"" ITE82901_SETTINGS_KEY "\" in OpenRGB.json");
     }
 
     return(detected_controllers);

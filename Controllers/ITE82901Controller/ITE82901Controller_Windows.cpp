@@ -17,8 +17,6 @@
 #include "LogManager.h"
 #include <mmsystem.h>
 
-#pragma comment(lib, "winmm")
-
 /*---------------------------------------------------------*\
 | Overlapped operation types                                |
 \*---------------------------------------------------------*/
@@ -144,6 +142,17 @@ ITE82901Controller::ITE82901Controller
 ITE82901Controller::~ITE82901Controller()
 {
     std::lock_guard<std::mutex> lock(io_mutex);
+
+    /*-----------------------------------------------------*\
+    | Leave Direct mode on exit ([0xE0][protocol] then      |
+    | [0x32][0x00]) so the FW goes back to its own effect   |
+    | and the next OpenRGB session can control FW modes     |
+    \*-----------------------------------------------------*/
+    if(direct_enabled && dev_handle != INVALID_HANDLE_VALUE)
+    {
+        SetProtocolLocked();
+        SetDirectModeLocked(false);
+    }
 
     if(timer_raised)
     {
@@ -569,7 +578,21 @@ bool ITE82901Controller::OpenLocked()
 
     if(handle == INVALID_HANDLE_VALUE)
     {
-        LOG_ERROR("[ITE82901] Could not open %s (error %lu)", device_path.c_str(), GetLastError());
+        DWORD error = GetLastError();
+
+        /*-------------------------------------------------*\
+        | Driver not installed / device not present is the  |
+        | normal case on most PCs, so do not log an error   |
+        \*-------------------------------------------------*/
+        if(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+        {
+            LOG_VERBOSE("[ITE82901] %s not present (ITE I2C device driver not installed)", device_path.c_str());
+        }
+        else
+        {
+            LOG_ERROR("[ITE82901] Could not open %s (error %lu)", device_path.c_str(), error);
+        }
+
         return(false);
     }
 

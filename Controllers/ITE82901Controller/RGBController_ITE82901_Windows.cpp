@@ -21,8 +21,9 @@
     @direct :white_check_mark:
     @effects :white_check_mark:
     @detectors DetectITE82901Controllers
-    @comment Uses the ITE SPB peripheral kernel driver (ITE8853_<UID>)
-        to reach the PCH I2C controller. LED effects use the IT8297 /
+    @comment Windows x64 only. Uses the ITE I2C device driver (SPB
+        peripheral, device path ITE8853_<UID>) to reach the PCH I2C
+        controller; the device is skipped if the driver is not installed. LED effects use the IT8297 /
         IT8237 LED parameter protocol, raw I2C framing (0xE0 0x00, then
         command 0x20+N, apply 0x28, save 0x5E). The stored effect is
         read back with 0x20 at startup. Direct mode streams RGB to
