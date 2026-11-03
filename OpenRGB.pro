@@ -340,7 +340,21 @@ win32:INCLUDEPATH +=                                                            
     wmi/                                                                                        \
 
 win32:SOURCES += $$CONTROLLER_CPP_WINDOWS
+#-----------------------------------------------------------------------------------------------#
+# ITE 82901: Windows x64 only (ITE I2C device driver is x64), needs winmm for timeBeginPeriod   #
+#-----------------------------------------------------------------------------------------------#
+win32:!contains(QMAKE_TARGET.arch, x86_64) {
+    win32:SOURCES -=                                                                            \
+        Controllers/ITE82901Controller/ITE82901Controller_Windows.cpp                           \
+        Controllers/ITE82901Controller/ITE82901ControllerDetect_Windows.cpp                     \
+        Controllers/ITE82901Controller/RGBController_ITE82901_Windows.cpp                       \
 
+    win32:HEADERS -=                                                                            \
+        Controllers/ITE82901Controller/ITE82901Controller_Windows.h                             \
+        Controllers/ITE82901Controller/RGBController_ITE82901_Windows.h                         \
+}
+
+win32:contains(QMAKE_TARGET.arch, x86_64):LIBS += -lwinmm
 #-----------------------------------------------------------------------------------------------#
 # Exclude controllers that depend on PawnIO from the 32-bit BUILDDATE_STRING                    #
 #-----------------------------------------------------------------------------------------------#
