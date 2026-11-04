@@ -102,8 +102,6 @@ ITE82901Controller::ITE82901Controller
     std::string         dev_name,
     std::string         driver_name,
     int                 driver_uid,
-    unsigned long long  zone_mask,
-    int                 parameter_index,
     bool                i2c_protocol,
     int                 strip0_led_count
     )
@@ -114,8 +112,6 @@ ITE82901Controller::ITE82901Controller
 
     name            = dev_name;
     device_path     = path;
-    led_zone_mask   = zone_mask;
-    param_index     = parameter_index;
     use_i2c_protocol = i2c_protocol;
     strip_led_count  = strip0_led_count;
     direct_enabled   = false;
@@ -132,11 +128,6 @@ ITE82901Controller::ITE82901Controller
         strip_led_count = ITE82901_STRIP_MAX_LEDS;
     }
     dev_handle      = INVALID_HANDLE_VALUE;
-
-    if(param_index < 0 || param_index >= ITE82901_PARAMETER_COUNT)
-    {
-        param_index = 0;
-    }
 }
 
 ITE82901Controller::~ITE82901Controller()
@@ -183,7 +174,7 @@ std::string ITE82901Controller::GetLocation()
 {
     char buf[160];
 
-    snprintf(buf, sizeof(buf), "ITE SPB driver: %s, parameter %d, %s", device_path.c_str(), param_index, use_i2c_protocol ? "I2C" : "SMBus");
+    snprintf(buf, sizeof(buf), "ITE SPB driver: %s, %s", device_path.c_str(), use_i2c_protocol ? "I2C" : "SMBus");
 
     return(std::string(buf));
 }
@@ -235,13 +226,18 @@ bool ITE82901Controller::SetProtocolLocked()
 |   20      8     wTime_base0-3 (ms)                        |
 |   28      4     bCtrl_value0-3                            |
 \*---------------------------------------------------------*/
-bool ITE82901Controller::SetLedParameter(const ite82901_led_parameter* param)
+bool ITE82901Controller::SetLedParameter(int slot, unsigned long long zone_mask, bool leave_direct, const ite82901_led_parameter* param)
 {
     unsigned char buf[ITE82901_PARAMETER_SIZE];
 
+    if(slot < 0 || slot >= ITE82901_PARAMETER_COUNT)
+    {
+        return(false);
+    }
+
     memset(buf, 0, sizeof(buf));
 
-    PutLE64(&buf[0],  led_zone_mask);
+    PutLE64(&buf[0],  zone_mask);
     buf[8]  = 0x00;
     buf[9]  = param->mode;
     buf[10] = param->max_brightness;
@@ -260,28 +256,29 @@ bool ITE82901Controller::SetLedParameter(const ite82901_led_parameter* param)
     bool ok = SetProtocolLocked();
 
     /*-----------------------------------------------------*\
-    | Hardware effects need Direct mode turned off first    |
+    | Strip hardware effects need strip Direct mode turned  |
+    | off first; the PWM LED does not touch Direct mode     |
     \*-----------------------------------------------------*/
-    if(ok && direct_enabled)
+    if(ok && leave_direct && direct_enabled)
     {
         ok = SetDirectModeLocked(false);
     }
 
     if(ok)
     {
-        ok = SendBlockLocked((unsigned char)(ITE82901_CMD_LED_PARAMETER_0 + param_index), buf, sizeof(buf));
+        ok = SendBlockLocked((unsigned char)(ITE82901_CMD_LED_PARAMETER_0 + slot), buf, sizeof(buf));
         CommandGap();
     }
 
     if(ok)
     {
-        ok = SendByteLocked(ITE82901_CMD_APPLY, (unsigned char)(1 << param_index));
+        ok = SendByteLocked(ITE82901_CMD_APPLY, (unsigned char)(1 << slot));
         CommandGap();
     }
 
     if(!ok)
     {
-        LOG_ERROR("[ITE82901] Failed to set LED parameter %d (mode %d) via %s", param_index, param->mode, device_path.c_str());
+        LOG_ERROR("[ITE82901] Failed to set LED parameter %d (mode %d) via %s", slot, param->mode, device_path.c_str());
     }
 
     return(ok);
@@ -296,8 +293,13 @@ bool ITE82901Controller::SetLedParameter(const ite82901_led_parameter* param)
 |   No 0xE1 is sent. The 32 bytes are used directly as the  |
 |   gLedParameter image (same layout as the write).         |
 \*---------------------------------------------------------*/
-bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
+bool ITE82901Controller::ReadLedParameter(int slot, ite82901_led_parameter* param)
 {
+    if(slot < 0 || slot >= ITE82901_PARAMETER_COUNT)
+    {
+        return(false);
+    }
+
     std::lock_guard<std::mutex> lock(io_mutex);
 
     if(!SetProtocolLocked())
@@ -305,7 +307,7 @@ bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
         return(false);
     }
 
-    unsigned char cmd = (unsigned char)(ITE82901_CMD_LED_PARAMETER_0 + param_index);
+    unsigned char cmd = (unsigned char)(ITE82901_CMD_LED_PARAMETER_0 + slot);
     unsigned char buf[ITE82901_PARAMETER_SIZE];
     int           count = 0;
     bool          ok    = false;
@@ -319,7 +321,7 @@ bool ITE82901Controller::ReadLedParameter(ite82901_led_parameter* param)
 
     if(!ok)
     {
-        LOG_ERROR("[ITE82901] Read of parameter %d (0x%02X) failed via %s", param_index, cmd, device_path.c_str());
+        LOG_ERROR("[ITE82901] Read of parameter %d (0x%02X) failed via %s", slot, cmd, device_path.c_str());
         return(false);
     }
 

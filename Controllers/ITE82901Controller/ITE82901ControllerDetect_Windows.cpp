@@ -8,6 +8,7 @@
 |   SPDX-License-Identifier: GPL-2.0-or-later               |
 \*---------------------------------------------------------*/
 
+#include <memory>
 #include <string>
 #include "DetectionManager.h"
 #include "ITE82901Controller_Windows.h"
@@ -21,7 +22,10 @@
 #define ITE82901_DEFAULT_DRIVER_NAME    "ITE8853_"              /* \\.\ITE8853_<UID>    */
 #define ITE82901_DEFAULT_UID            0
 #define ITE82901_DEFAULT_LED_MASK       "0xFFFFFFFFFFFFFFFF"    /* lZone_Sel: all LEDs  */
-#define ITE82901_DEFAULT_PARAMETER      0                       /* gLedParameter[0]     */
+#define ITE82901_DEFAULT_PARAMETER      0                       /* strip: 0x20          */
+#define ITE82901_DEFAULT_PWM_ENABLED    true                    /* PWM LED device       */
+#define ITE82901_DEFAULT_PWM_PARAMETER  1                       /* PWM: 0x21            */
+#define ITE82901_DEFAULT_PWM_LED_MASK   "0xFFFFFFFFFFFFFFFF"    /* PWM lZone_Sel        */
 #define ITE82901_DEFAULT_STRIP0_LEDS    40                      /* Direct mode length   */
 #define ITE82901_DEFAULT_I2C_PROTOCOL   true                    /* 0xE0 + data, [cmd][data] */
 
@@ -94,6 +98,9 @@ static json MakeDefaultDevice()
     device["parameter_index"]   = ITE82901_DEFAULT_PARAMETER;
     device["i2c_protocol"]      = ITE82901_DEFAULT_I2C_PROTOCOL;
     device["strip0_led_count"]  = ITE82901_DEFAULT_STRIP0_LEDS;
+    device["pwm_enabled"]       = ITE82901_DEFAULT_PWM_ENABLED;
+    device["pwm_parameter_index"] = ITE82901_DEFAULT_PWM_PARAMETER;
+    device["pwm_led_mask"]      = ITE82901_DEFAULT_PWM_LED_MASK;
 
     return(device);
 }
@@ -183,27 +190,48 @@ DetectedControllers DetectITE82901Controllers()
             strip_leds = ITE82901_DEFAULT_STRIP0_LEDS;
         }
 
+        bool                pwm_on      = ReadBoolSetting  (dev, "pwm_enabled",         ITE82901_DEFAULT_PWM_ENABLED);
+        int                 pwm_index   = ReadIntSetting   (dev, "pwm_parameter_index", ITE82901_DEFAULT_PWM_PARAMETER);
+        unsigned long long  pwm_mask    = ReadU64Setting   (dev, "pwm_led_mask",        0xFFFFFFFFFFFFFFFFULL);
+
         if(param_index < 0 || param_index >= ITE82901_PARAMETER_COUNT)
         {
-            LOG_ERROR("[ITE82901] parameter_index %d out of range (0-%d) for \"%s\", using 0", param_index, ITE82901_PARAMETER_COUNT - 1, name.c_str());
-            param_index = 0;
+            LOG_ERROR("[ITE82901] parameter_index %d out of range (0-%d) for \"%s\", using %d", param_index, ITE82901_PARAMETER_COUNT - 1, name.c_str(), ITE82901_DEFAULT_PARAMETER);
+            param_index = ITE82901_DEFAULT_PARAMETER;
         }
 
-        ITE82901Controller* controller = new ITE82901Controller(name, driver_name, uid, led_mask, param_index, i2c_mode, strip_leds);
+        if(pwm_index < 0 || pwm_index >= ITE82901_PARAMETER_COUNT || pwm_index == param_index)
+        {
+            LOG_ERROR("[ITE82901] pwm_parameter_index %d invalid (0-%d, must differ from parameter_index %d) for \"%s\", PWM LED disabled", pwm_index, ITE82901_PARAMETER_COUNT - 1, param_index, name.c_str());
+            pwm_on = false;
+        }
+
+        /*-------------------------------------------------*\
+        | One driver handle (opened exclusively) shared by   |
+        | the strip and PWM devices                          |
+        \*-------------------------------------------------*/
+        std::shared_ptr<ITE82901Controller> controller = std::make_shared<ITE82901Controller>(name, driver_name, uid, i2c_mode, strip_leds);
 
         /*-------------------------------------------------*\
         | Driver not installed / device not present: skip   |
         \*-------------------------------------------------*/
         if(!controller->Open())
         {
-            delete controller;
             continue;
         }
 
-        LOG_INFO("[ITE82901] Registered \"%s\" (%s, LED mask 0x%016llX)",
-                 name.c_str(), controller->GetLocation().c_str(), led_mask);
+        LOG_INFO("[ITE82901] Registered \"%s\" (%s, parameter %d, LED mask 0x%016llX)",
+                 name.c_str(), controller->GetLocation().c_str(), param_index, led_mask);
 
-        detected_controllers.push_back(new RGBController_ITE82901(controller));
+        detected_controllers.push_back(new RGBController_ITE82901(controller, ITE82901_VARIANT_STRIP, param_index, led_mask));
+
+        if(pwm_on)
+        {
+            LOG_INFO("[ITE82901] Registered \"%s PWM\" (%s, parameter %d, LED mask 0x%016llX)",
+                     name.c_str(), controller->GetLocation().c_str(), pwm_index, pwm_mask);
+
+            detected_controllers.push_back(new RGBController_ITE82901(controller, ITE82901_VARIANT_PWM, pwm_index, pwm_mask));
+        }
     }
 
     /*-----------------------------------------------------*\

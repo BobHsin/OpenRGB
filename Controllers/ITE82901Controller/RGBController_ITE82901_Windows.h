@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <memory>
 #include "RGBController.h"
 #include "ITE82901Controller_Windows.h"
 
@@ -22,10 +23,28 @@
 #define ITE82901_BRIGHTNESS_MIN     0
 #define ITE82901_BRIGHTNESS_MAX     100
 
+/*---------------------------------------------------------*\
+| Device variants sharing one ITE82901Controller            |
+|   STRIP : LED strip, gLedParameter[0] (cmd 0x20), Direct  |
+|   PWM   : single PWM LED, gLedParameter[1] (cmd 0x21),    |
+|           Static / Breathing / Flashing / Rainbow only    |
+\*---------------------------------------------------------*/
+enum
+{
+    ITE82901_VARIANT_STRIP      = 0,
+    ITE82901_VARIANT_PWM        = 1,
+};
+
 class RGBController_ITE82901 : public RGBController
 {
 public:
-    RGBController_ITE82901(ITE82901Controller* controller_ptr);
+    RGBController_ITE82901
+        (
+        std::shared_ptr<ITE82901Controller> controller_ptr,
+        int                                 device_variant,
+        int                                 parameter_slot,
+        unsigned long long                  zone_mask
+        );
     ~RGBController_ITE82901();
 
     void        SetupZones();
@@ -38,7 +57,11 @@ public:
     void        DeviceSaveMode();
 
 private:
-    ITE82901Controller* controller;
+    std::shared_ptr<ITE82901Controller> controller;
+    int                                 variant;
+    int                                 param_slot;
+    unsigned long long                  led_zone_mask;
 
+    int         FindModeIndex(int value);
     void        LoadModeFromDevice();
 };

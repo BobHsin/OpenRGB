@@ -127,8 +127,6 @@ public:
         std::string         dev_name,
         std::string         driver_name,
         int                 driver_uid,
-        unsigned long long  zone_mask,
-        int                 parameter_index,
         bool                i2c_protocol,
         int                 strip0_led_count
         );
@@ -138,8 +136,15 @@ public:
     std::string     GetName();
     std::string     GetLocation();
 
-    bool            SetLedParameter(const ite82901_led_parameter* param);
-    bool            ReadLedParameter(ite82901_led_parameter* param);
+    /*-----------------------------------------------------*\
+    | slot      : gLedParameter index N (cmd 0x20+N)        |
+    |             0 = LED strip (0x20), 1 = PWM LED (0x21)  |
+    | zone_mask : lZone_Sel written into the parameter      |
+    | leave_direct : turn strip Direct mode off first       |
+    |             (strip effects only, not the PWM LED)     |
+    \*-----------------------------------------------------*/
+    bool            SetLedParameter(int slot, unsigned long long zone_mask, bool leave_direct, const ite82901_led_parameter* param);
+    bool            ReadLedParameter(int slot, ite82901_led_parameter* param);
     bool            SaveToFlash();
 
     int             GetStripLedCount();
@@ -149,8 +154,6 @@ public:
 private:
     std::string         name;
     std::string         device_path;
-    unsigned long long  led_zone_mask;
-    int                 param_index;
     bool                use_i2c_protocol;
     int                 strip_led_count;
     bool                direct_enabled;

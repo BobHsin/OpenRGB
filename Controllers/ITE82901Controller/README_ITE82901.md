@@ -21,7 +21,7 @@ Windows 32-bit 由 `OpenRGB.pro` 排除（見 `OpenRGB.pro.patch` 或 `OpenRGB.p
 | 指令 | 資料 | 用途 |
 |---|---|---|
 | `0xE0` | 1 byte（目前 0x00） | Set protocol（每次更新燈效前都會送出；值定義在 `ITE82901_SET_PROTOCOL_DATA`） |
-| `0x20+N` | 32 bytes | 寫入 gLedParameter[N] |
+| `0x20+N` | 32 bytes | 寫入 gLedParameter[N]（燈條 `0x20`，PWM 單顆燈 `0x21`） |
 | `0x28` | 1 byte（bitN） | 套用 parameter N |
 | `0x32` | 1 byte | Direct 模式開關（`01` = strip-0 開啟，`00` = 關閉） |
 | `0x34` | 1 byte | strip-0 長度代碼（0: 32, 1: 64, 2: 256, 3: 512, 4: 1024 顆） |
@@ -68,7 +68,7 @@ OpenRGB 的「Direct」模式會逐顆控制 strip-0 的 LED，OpenRGB Effects �
 - 每筆封包之後一樣間隔 5 ms。Direct 模式期間會把 Windows 計時器精度暫時調成 1 ms，讓 5 ms 的間隔更準確；離開 Direct 後恢復。
 - Direct 期間每秒重送一次 `E0 00`（不是每個畫面都送），避免 FW 重置後協定不一致。
 - Direct 模式沒有「Save To Device」。
-- LED 數量由 `strip0_led_count` 設定（預設 32，最多 84），修改後按 Rescan Devices 生效。
+- LED 數量由 `strip0_led_count` 設定（預設 40，最多 84），修改後按 Rescan Devices 生效。
 
 ### 存檔
 
@@ -99,6 +99,30 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 所以每次更新燈效前都會重新送出 `E0 00`。`E0 xx` 在兩種協定下的格式相同，不論 FW 目前在哪個模式都能正確解讀。
 
 多位元組欄位皆為 little-endian，顏色為 0x00RRGGBB。每筆封包送出後都會延遲 5 ms（規格要求至少 1 ms），確保 FW 來得及處理；數值定義在 `ITE82901_COMMAND_GAP_MS`。
+
+## PWM 單顆燈
+
+PWM 單顆燈在 OpenRGB 中是**另一個獨立裝置**「ITE 82901 PWM」，和燈條共用同一個 driver 連線。
+
+| 項目 | 燈條（ITE 82901） | PWM 單顆燈（ITE 82901 PWM） |
+|---|---|---|
+| 參數指令 | `0x20`（gLedParameter[0]） | `0x21`（gLedParameter[1]） |
+| 套用 | `28 01` | `28 02` |
+| 燈效 | Direct、Off、Static、Breathing、Flashing、Double Flashing、Spectrum Cycle、Meteor、Rainbow Wave、Ripple、Wave | Static、Breathing、Flashing、Rainbow |
+| Direct 控制 | 支援 | 不支援 |
+| 存檔 / 啟動讀回 | `5E` / 讀 `0x20` | `5E` / 讀 `0x21` |
+
+封包格式和燈條完全相同，例如：
+
+```
+[0xE0][0x00]
+[0x21][lZone_Sel x8][00][bMode_Sel][bMax][bMin][dwColor0][dwColor1][wTime x4][bCtrl x4]
+[0x28][0x02]
+```
+
+- 修改 PWM 燈效**不會**關閉燈條的 Direct 模式，燈條的音樂特效可以繼續執行。
+- 「Rainbow」使用 bMode_Sel 6（Rainbow），速度範圍和燈條的 Rainbow Wave 相同。
+- 啟動讀回時，若 PWM 存的燈效不在上述 4 種之內，UI 停在 Static。
 
 ## 模式對應
 
@@ -134,7 +158,10 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
             "led_mask": "0xFFFFFFFFFFFFFFFF",
             "parameter_index": 0,
             "i2c_protocol": true,
-            "strip0_led_count": 32
+            "strip0_led_count": 40,
+            "pwm_enabled": true,
+            "pwm_parameter_index": 1,
+            "pwm_led_mask": "0xFFFFFFFFFFFFFFFF"
         }
     ]
 }
@@ -142,6 +169,9 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 
 - `driver_name` + `uid`：裝置路徑，例如 `\\.\ITE8853_0`
 - `led_mask`：lZone_Sel，bit x = LED x
+- `pwm_enabled`：是否建立 PWM 單顆燈裝置（預設 `true`）
+- `pwm_parameter_index`：PWM 使用的 gLedParameter 編號（預設 1 → `0x21`，不可和 `parameter_index` 相同）
+- `pwm_led_mask`：PWM 參數的 lZone_Sel（預設全部）
 - `strip0_led_count`：strip-0 的 LED 數量（1～84），Direct 模式使用
 - `parameter_index`：使用的 gLedParameter 編號（0～7）
 - `i2c_protocol`：`true`（預設）= 先送 `E0 00`，封包為 `[cmd][data]`；`false` = 不切換協定，封包為 SMBus block write `[cmd][count][data]`
