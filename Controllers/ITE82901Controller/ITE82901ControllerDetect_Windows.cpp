@@ -207,8 +207,8 @@ DetectedControllers DetectITE82901Controllers()
         }
 
         /*-------------------------------------------------*\
-        | One driver handle (opened exclusively) shared by   |
-        | the strip and PWM devices                          |
+        | One driver handle (opened exclusively); the strip |
+        | and the PWM LED are two zones of one device       |
         \*-------------------------------------------------*/
         std::shared_ptr<ITE82901Controller> controller = std::make_shared<ITE82901Controller>(name, driver_name, uid, i2c_mode, strip_leds);
 
@@ -220,18 +220,10 @@ DetectedControllers DetectITE82901Controllers()
             continue;
         }
 
-        LOG_INFO("[ITE82901] Registered \"%s\" (%s, parameter %d, LED mask 0x%016llX)",
-                 name.c_str(), controller->GetLocation().c_str(), param_index, led_mask);
+        LOG_INFO("[ITE82901] Registered \"%s\" (%s) - LED Strip: parameter %d, LED mask 0x%016llX; PWM LED: %s",
+                 name.c_str(), controller->GetLocation().c_str(), param_index, led_mask, pwm_on ? "enabled" : "disabled");
 
-        detected_controllers.push_back(new RGBController_ITE82901(controller, ITE82901_VARIANT_STRIP, param_index, led_mask));
-
-        if(pwm_on)
-        {
-            LOG_INFO("[ITE82901] Registered \"%s PWM\" (%s, parameter %d, LED mask 0x%016llX)",
-                     name.c_str(), controller->GetLocation().c_str(), pwm_index, pwm_mask);
-
-            detected_controllers.push_back(new RGBController_ITE82901(controller, ITE82901_VARIANT_PWM, pwm_index, pwm_mask));
-        }
+        detected_controllers.push_back(new RGBController_ITE82901(controller, param_index, led_mask, pwm_on, pwm_index, pwm_mask));
     }
 
     /*-----------------------------------------------------*\

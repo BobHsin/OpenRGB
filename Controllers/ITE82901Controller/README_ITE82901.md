@@ -102,15 +102,13 @@ FW 斷電或睡眠喚醒後會回到預設的 SMBus 協定，而 SMBus 模式的
 
 ## PWM 單顆燈
 
-PWM 單顆燈在 OpenRGB 中是**另一個獨立裝置**「ITE 82901 PWM」，和燈條共用同一個 driver 連線。
+燈條和 PWM 單顆燈是**同一個裝置「ITE 82901」的兩個 zone**，在裝置頁面的 **Zone** 選單切換：
 
-| 項目 | 燈條（ITE 82901） | PWM 單顆燈（ITE 82901 PWM） |
+| Zone 選單 | 可選的燈效 | 送出的指令 |
 |---|---|---|
-| 參數指令 | `0x20`（gLedParameter[0]） | `0x21`（gLedParameter[1]） |
-| 套用 | `28 01` | `28 02` |
-| 燈效 | Direct、Off、Static、Breathing、Flashing、Double Flashing、Spectrum Cycle、Meteor、Rainbow Wave、Ripple、Wave | Static、Breathing、Flashing、Rainbow |
-| Direct 控制 | 支援 | 不支援 |
-| 存檔 / 啟動讀回 | `5E` / 讀 `0x20` | `5E` / 讀 `0x21` |
+| Entire Device | Direct + 燈條的 10 種燈效 | 燈條 `0x20`；PWM 若設為「Follow Device Mode」且燈效是它支援的，也會跟著改 `0x21` |
+| LED Strip | Follow Device Mode + 燈條的 10 種燈效 | `0x20`，套用 `28 01` |
+| PWM LED | Follow Device Mode + Static、Breathing、Flashing、Rainbow | `0x21`，套用 `28 02` |
 
 封包格式和燈條完全相同，例如：
 
@@ -120,9 +118,12 @@ PWM 單顆燈在 OpenRGB 中是**另一個獨立裝置**「ITE 82901 PWM」，�
 [0x28][0x02]
 ```
 
+- PWM LED 預設使用自己的燈效（啟動時讀回 `0x21` 的設定）。設成「Follow Device Mode」時，只會跟隨它支援的裝置燈效：Off、Static、Breathing、Flashing、Rainbow Wave；其他燈效（例如 Meteor）PWM 保持原樣。
 - 修改 PWM 燈效**不會**關閉燈條的 Direct 模式，燈條的音樂特效可以繼續執行。
+- 裝置在 Direct 模式時，Direct 優先控制燈條，在「LED Strip」zone 選擇的燈效暫不套用。
+- Direct 模式只送燈條的 LED（`0x58`），PWM LED 不支援 Direct。
 - 「Rainbow」使用 bMode_Sel 6（Rainbow），速度範圍和燈條的 Rainbow Wave 相同。
-- 啟動讀回時，若 PWM 存的燈效不在上述 4 種之內，UI 停在 Static。
+- 「Save To Device」送出 `5E`，FW 會同時儲存燈條和 PWM 的設定。
 
 ## 模式對應
 
@@ -169,7 +170,7 @@ PWM 單顆燈在 OpenRGB 中是**另一個獨立裝置**「ITE 82901 PWM」，�
 
 - `driver_name` + `uid`：裝置路徑，例如 `\\.\ITE8853_0`
 - `led_mask`：lZone_Sel，bit x = LED x
-- `pwm_enabled`：是否建立 PWM 單顆燈裝置（預設 `true`）
+- `pwm_enabled`：是否加入 PWM LED zone（預設 `true`；`false` 時只有燈條，沒有 zone 燈效選單）
 - `pwm_parameter_index`：PWM 使用的 gLedParameter 編號（預設 1 → `0x21`，不可和 `parameter_index` 相同）
 - `pwm_led_mask`：PWM 參數的 lZone_Sel（預設全部）
 - `strip0_led_count`：strip-0 的 LED 數量（1～84），Direct 模式使用
