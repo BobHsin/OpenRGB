@@ -10,15 +10,20 @@
 \*---------------------------------------------------------*/
 
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
+#include <map>
+#include <vector>
 #include "hid_util.h"
 #include "HIDLampArrayController.h"
+#include "LogManager.h"
 #include "StringUtils.h"
 
 HIDLampArrayController::HIDLampArrayController(hid_device *dev_handle, const char *path)
 {
     dev                                 = dev_handle;
     location                            = path;
+    feature_report_length               = 0;
 
     /*-----------------------------------------------------*\
     | Parse report IDs from descriptor                      |
@@ -39,6 +44,18 @@ HIDLampArrayController::HIDLampArrayController(hid_device *dev_handle, const cha
     | Create a list of usages and their report IDs          |
     \*-----------------------------------------------------*/
     std::unordered_map<unsigned int, unsigned int> usage_to_report_id;
+
+    /*-----------------------------------------------------*\
+    | Feature report sizes. Report ID, Report Size and      |
+    | Report Count are HID global items: they stay in       |
+    | effect until changed (End Collection does not reset   |
+    | them), so they are tracked separately from report_id  |
+    | above, which is only used for the usage lookup.       |
+    \*-----------------------------------------------------*/
+    std::map<unsigned int, unsigned int> feature_bits_per_report_id;
+    unsigned int  global_report_id      = 0;
+    unsigned int  global_report_size    = 0;
+    unsigned int  global_report_count   = 0;
 
     /*-----------------------------------------------------*\
     | A failed descriptor read returns -1; treated as a     |
@@ -101,8 +118,43 @@ HIDLampArrayController::HIDLampArrayController(hid_device *dev_handle, const cha
                 }
                 break;
         }
+        switch(key_cmd)
+        {
+            case 0x74:  /* Report Size (global)         */
+                global_report_size      = get_hid_report_bytes(report_descriptor, size, data_len, pos);
+                break;
+
+            case 0x84:  /* Report ID (global)           */
+                global_report_id        = get_hid_report_bytes(report_descriptor, size, data_len, pos);
+                break;
+
+            case 0x94:  /* Report Count (global)        */
+                global_report_count     = get_hid_report_bytes(report_descriptor, size, data_len, pos);
+                break;
+
+            case 0xB0:  /* Feature (main)               */
+                feature_bits_per_report_id[global_report_id] += global_report_size * global_report_count;
+                break;
+        }
+
         pos += data_len + key_size;
     }
+
+    /*-----------------------------------------------------*\
+    | FeatureReportByteLength = largest feature report in   |
+    | bytes + 1 byte for the report ID                      |
+    \*-----------------------------------------------------*/
+    for(const std::pair<const unsigned int, unsigned int>& feature : feature_bits_per_report_id)
+    {
+        unsigned int length = ((feature.second + 7) / 8) + 1;
+
+        if(length > feature_report_length)
+        {
+            feature_report_length = length;
+        }
+    }
+
+    LOG_DEBUG("[HID LampArray] Feature report length from descriptor: %u bytes", feature_report_length);
 
     /*-----------------------------------------------------*\
     | Get the report IDs for each report                    |
@@ -237,11 +289,20 @@ std::vector<LampAttributes> HIDLampArrayController::GetLamps()
     return(Lamps);
 }
 
+/*---------------------------------------------------------*\
+| Get Feature buffer length: the descriptor's largest       |
+| feature report (what Windows requires and what Windows    |
+| Dynamic Lighting itself uses), but never smaller than the |
+| structure being read.                                     |
+\*---------------------------------------------------------*/
+std::size_t HIDLampArrayController::GetFeatureBufferLength(std::size_t minimum_length)
+{
+    return(std::max((std::size_t)feature_report_length, minimum_length));
+}
+
 void HIDLampArrayController::GetLampArrayAttributesReport()
 {
-    unsigned char   usb_buf[256];
-
-    memset(usb_buf, 0, sizeof(usb_buf));
+    std::vector<unsigned char> usb_buf(GetFeatureBufferLength(sizeof(LampArrayAttributes) + 1), 0);
 
     /*-----------------------------------------------------*\
     | First byte is the report ID                           |
@@ -251,17 +312,18 @@ void HIDLampArrayController::GetLampArrayAttributesReport()
     /*-----------------------------------------------------*\
     | Get the report                                        |
     \*-----------------------------------------------------*/
-    hid_get_feature_report(dev, usb_buf, sizeof(usb_buf));
+    if(hid_get_feature_report(dev, usb_buf.data(), usb_buf.size()) < 0)
+    {
+        LOG_WARNING("[HID LampArray] Get LampArrayAttributes report (ID %d, %u bytes) failed", ids.LampArrayAttributesReportID, (unsigned int)usb_buf.size());
+    }
 
     memcpy(&LampArray, &usb_buf[1], sizeof(LampArray));
 }
 
 void HIDLampArrayController::GetLampAttributesResponseReport()
 {
-    unsigned char   usb_buf[256];
+    std::vector<unsigned char> usb_buf(GetFeatureBufferLength(sizeof(LampAttributes) + 1), 0);
     LampAttributes  attributes;
-
-    memset(usb_buf, 0, sizeof(usb_buf));
 
     /*-----------------------------------------------------*\
     | First byte is the report ID                           |
@@ -271,7 +333,10 @@ void HIDLampArrayController::GetLampAttributesResponseReport()
     /*-----------------------------------------------------*\
     | Get the report                                        |
     \*-----------------------------------------------------*/
-    hid_get_feature_report(dev, usb_buf, sizeof(usb_buf));
+    if(hid_get_feature_report(dev, usb_buf.data(), usb_buf.size()) < 0)
+    {
+        LOG_WARNING("[HID LampArray] Get LampAttributesResponse report (ID %d, %u bytes) failed", ids.LampAttributesResponseReportID, (unsigned int)usb_buf.size());
+    }
 
     memcpy(&attributes, &usb_buf[1], sizeof(attributes));
 

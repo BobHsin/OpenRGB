@@ -104,6 +104,9 @@ enum
     HID_LAMPARRAY_KIND_WEARABLE         = 0x08,     /* LampArrayKindWearable        */
     HID_LAMPARRAY_KIND_FURNITURE        = 0x09,     /* LampArrayKindFurniture       */
     HID_LAMPARRAY_KIND_ART              = 0x0A,     /* LampArrayKindArt             */
+    HID_LAMPARRAY_KIND_HEADSET          = 0x0B,     /* LampArrayKindHeadset         */
+    HID_LAMPARRAY_KIND_MICROPHONE       = 0x0C,     /* LampArrayKindMicrophone      */
+    HID_LAMPARRAY_KIND_SPEAKER          = 0x0D,     /* LampArrayKindSpeaker         */
 };
 
 class HIDLampArrayController
@@ -138,6 +141,16 @@ private:
     | Parameters from LampArrayAttributesReport             |
     \*-----------------------------------------------------*/
     LampArrayAttributes         LampArray;
+
+    /*-----------------------------------------------------*\
+    | Largest feature report incl. report ID byte, from the |
+    | report descriptor (same as Windows HIDP_CAPS          |
+    | FeatureReportByteLength). Used as the Get Feature     |
+    | length so every platform reads like Windows does.     |
+    \*-----------------------------------------------------*/
+    unsigned int                feature_report_length;
+
+    std::size_t                 GetFeatureBufferLength(std::size_t minimum_length);
 
     void GetLampArrayAttributesReport();
     void GetLampAttributesResponseReport();
