@@ -29,10 +29,9 @@
         command 0x20+N, apply 0x28, save 0x5E). The stored effect is
         read back with 0x20 at startup. Direct mode streams RGB to
         strip-0 with 0x58 (enable 0x32, length 0x34); the LED count is
-        "strip0_led_count" in OpenRGB.json. The single PWM LED is a
-        second zone with its own zone modes (Static / Breathing /
-        Flashing / Rainbow, no Direct) using gLedParameter[1] (cmd 0x21,
-        apply bit 1).
+        "strip0_led_count" in OpenRGB.json. A single PWM LED is exposed
+        as a second device using gLedParameter[1] (cmd 0x21, apply bit 1)
+        with Static / Breathing / Flashing / Rainbow and no Direct mode.
         Configure under "ITE82901Devices" in OpenRGB.json.
 \*-------------------------------------------------------------------*/
 
@@ -169,32 +168,74 @@ static void AddMode
 RGBController_ITE82901::RGBController_ITE82901
     (
     std::shared_ptr<ITE82901Controller> controller_ptr,
-    int                                 strip_parameter_slot,
-    unsigned long long                  strip_zone_mask,
-    bool                                pwm_enabled,
-    int                                 pwm_parameter_slot,
-    unsigned long long                  pwm_zone_mask
+    int                                 device_variant,
+    int                                 parameter_slot,
+    unsigned long long                  zone_mask
     )
 {
-    controller  = controller_ptr;
-    strip_slot  = strip_parameter_slot;
-    strip_mask  = strip_zone_mask;
-    pwm_present = pwm_enabled;
-    pwm_slot    = pwm_parameter_slot;
-    pwm_mask    = pwm_zone_mask;
+    controller      = controller_ptr;
+    variant         = device_variant;
+    param_slot      = parameter_slot;
+    led_zone_mask   = zone_mask;
 
-    name        = controller->GetName();
+    char slot_info[48];
+    snprintf(slot_info, sizeof(slot_info), ", parameter %d (cmd 0x%02X)", param_slot, ITE82901_CMD_LED_PARAMETER_0 + param_slot);
+
     vendor      = "ITE";
     type        = DEVICE_TYPE_MOTHERBOARD;
-    description = "ITE 82901 LED Controller (PCH I2C)";
-    location    = controller->GetLocation();
+    location    = controller->GetLocation() + slot_info;
+
+    if(variant == ITE82901_VARIANT_PWM)
+    {
+        name        = controller->GetName() + " PWM";
+        description = "ITE 82901 PWM LED (PCH I2C)";
+    }
+    else
+    {
+        name        = controller->GetName();
+        description = "ITE 82901 LED Strip Controller (PCH I2C)";
+    }
+
+    const unsigned int color_flags  = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
+    const unsigned int effect_flags = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
+
+    if(variant == ITE82901_VARIANT_PWM)
+    {
+        /*-------------------------------------------------*\
+        | PWM LED: Static / Breathing / Flashing / Rainbow  |
+        | (no Direct mode)                                  |
+        \*-------------------------------------------------*/
+        AddMode(modes, "Static",          ITE82901_UI_STATIC,         color_flags,                                                          MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Breathing",       ITE82901_UI_BREATHING,      color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Flashing",        ITE82901_UI_FLASHING,       color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Rainbow",         ITE82901_UI_RAINBOW_WAVE,   effect_flags,                                                         MODE_COLORS_NONE,          0);
+    }
+    else
+    {
+        /*-------------------------------------------------*\
+        | Direct: per-LED colors streamed by OpenRGB /      |
+        | Effects plugin (e.g. audio effects). Not saved.   |
+        \*-------------------------------------------------*/
+        AddMode(modes, "Direct",          ITE82901_UI_DIRECT,         MODE_FLAG_HAS_PER_LED_COLOR,                                          MODE_COLORS_PER_LED,       0);
+        modes.back().flags &= ~MODE_FLAG_MANUAL_SAVE;
+
+        AddMode(modes, "Off",             ITE82901_UI_OFF,            0,                                                                    MODE_COLORS_NONE,          0);
+        AddMode(modes, "Static",          ITE82901_UI_STATIC,         color_flags,                                                          MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Breathing",       ITE82901_UI_BREATHING,      color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Flashing",        ITE82901_UI_FLASHING,       color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Double Flashing", ITE82901_UI_DOUBLE_FLASH,   color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Spectrum Cycle",  ITE82901_UI_SPECTRUM_CYCLE, effect_flags,                                                         MODE_COLORS_NONE,          0);
+        AddMode(modes, "Meteor",          ITE82901_UI_METEOR,         color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
+        AddMode(modes, "Rainbow Wave",    ITE82901_UI_RAINBOW_WAVE,   effect_flags,                                                         MODE_COLORS_NONE,          0);
+        AddMode(modes, "Ripple",          ITE82901_UI_RIPPLE,         color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 2);
+        AddMode(modes, "Wave",            ITE82901_UI_WAVE,           effect_flags,                                                         MODE_COLORS_NONE,          0);
+    }
 
     /*-----------------------------------------------------*\
-    | Device modes: Direct + strip hardware effects         |
+    | Start on Static, then replace with the effect stored  |
+    | in the FW if it can be read back                      |
     \*-----------------------------------------------------*/
-    AddStripModes(modes, true);
-
-    active_mode = FindModeIndex(modes, ITE82901_UI_STATIC);
+    active_mode = FindModeIndex(ITE82901_UI_STATIC);
 
     SetupZones();
 
@@ -204,60 +245,21 @@ RGBController_ITE82901::RGBController_ITE82901
 RGBController_ITE82901::~RGBController_ITE82901()
 {
     Shutdown();
+
+    /*-----------------------------------------------------*\
+    | controller is shared between the strip and PWM        |
+    | devices; it is deleted when the last one goes away    |
+    \*-----------------------------------------------------*/
 }
 
 /*---------------------------------------------------------*\
-| Strip effects (optionally with Direct)                    |
+| Index in modes[] of the mode with the given UI value      |
 \*---------------------------------------------------------*/
-void RGBController_ITE82901::AddStripModes(std::vector<mode>& list, bool with_direct)
+int RGBController_ITE82901::FindModeIndex(int value)
 {
-    const unsigned int color_flags  = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
-    const unsigned int effect_flags = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
-
-    if(with_direct)
+    for(std::size_t mode_idx = 0; mode_idx < modes.size(); mode_idx++)
     {
-        /*-------------------------------------------------*\
-        | Direct: per-LED colors streamed by OpenRGB /      |
-        | Effects plugin (e.g. audio effects). Not saved.   |
-        \*-------------------------------------------------*/
-        AddMode(list, "Direct",          ITE82901_UI_DIRECT,         MODE_FLAG_HAS_PER_LED_COLOR,                                          MODE_COLORS_PER_LED,       0);
-        list.back().flags &= ~MODE_FLAG_MANUAL_SAVE;
-    }
-
-    AddMode(list, "Off",             ITE82901_UI_OFF,            0,                                                                    MODE_COLORS_NONE,          0);
-    AddMode(list, "Static",          ITE82901_UI_STATIC,         color_flags,                                                          MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Breathing",       ITE82901_UI_BREATHING,      color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Flashing",        ITE82901_UI_FLASHING,       color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Double Flashing", ITE82901_UI_DOUBLE_FLASH,   color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Spectrum Cycle",  ITE82901_UI_SPECTRUM_CYCLE, effect_flags,                                                         MODE_COLORS_NONE,          0);
-    AddMode(list, "Meteor",          ITE82901_UI_METEOR,         color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Rainbow Wave",    ITE82901_UI_RAINBOW_WAVE,   effect_flags,                                                         MODE_COLORS_NONE,          0);
-    AddMode(list, "Ripple",          ITE82901_UI_RIPPLE,         color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 2);
-    AddMode(list, "Wave",            ITE82901_UI_WAVE,           effect_flags,                                                         MODE_COLORS_NONE,          0);
-}
-
-/*---------------------------------------------------------*\
-| PWM LED effects: Static / Breathing / Flashing / Rainbow  |
-\*---------------------------------------------------------*/
-void RGBController_ITE82901::AddPwmModes(std::vector<mode>& list)
-{
-    const unsigned int color_flags  = MODE_FLAG_HAS_MODE_SPECIFIC_COLOR | MODE_FLAG_HAS_BRIGHTNESS;
-    const unsigned int effect_flags = MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_BRIGHTNESS;
-
-    AddMode(list, "Static",          ITE82901_UI_STATIC,         color_flags,                                                          MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Breathing",       ITE82901_UI_BREATHING,      color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Flashing",        ITE82901_UI_FLASHING,       color_flags | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_RANDOM_COLOR,      MODE_COLORS_MODE_SPECIFIC, 1);
-    AddMode(list, "Rainbow",         ITE82901_UI_RAINBOW_WAVE,   effect_flags,                                                         MODE_COLORS_NONE,          0);
-}
-
-/*---------------------------------------------------------*\
-| Index of the mode with the given UI value in a mode list  |
-\*---------------------------------------------------------*/
-int RGBController_ITE82901::FindModeIndex(const std::vector<mode>& list, int value)
-{
-    for(std::size_t mode_idx = 0; mode_idx < list.size(); mode_idx++)
-    {
-        if(list[mode_idx].value == value)
+        if(modes[mode_idx].value == value)
         {
             return((int)mode_idx);
         }
@@ -266,45 +268,13 @@ int RGBController_ITE82901::FindModeIndex(const std::vector<mode>& list, int val
     return(-1);
 }
 
-/*---------------------------------------------------------*\
-| Device modes the PWM LED can follow ("Follow Device Mode")|
-\*---------------------------------------------------------*/
-bool RGBController_ITE82901::PwmSupports(int value)
-{
-    return((value == ITE82901_UI_OFF)
-        || (value == ITE82901_UI_STATIC)
-        || (value == ITE82901_UI_BREATHING)
-        || (value == ITE82901_UI_FLASHING)
-        || (value == ITE82901_UI_RAINBOW_WAVE));
-}
-
 void RGBController_ITE82901::SetupZones()
 {
     /*-----------------------------------------------------*\
-    | Zone 0: LED strip (linear, Direct capable)            |
+    | Strip-0 as one linear zone. Hardware effects apply to |
+    | the LEDs in lZone_Sel; Direct mode drives each LED.   |
     \*-----------------------------------------------------*/
-    unsigned int led_count = (unsigned int)controller->GetStripLedCount();
-
-    zone strip_zone;
-    strip_zone.name       = "LED Strip";
-    strip_zone.type       = ZONE_TYPE_LINEAR;
-    strip_zone.leds_min   = led_count;
-    strip_zone.leds_max   = led_count;
-    strip_zone.leds_count = led_count;
-    zones.push_back(strip_zone);
-
-    for(unsigned int led_idx = 0; led_idx < led_count; led_idx++)
-    {
-        led new_led;
-        new_led.name  = "LED Strip LED " + std::to_string(led_idx + 1);
-        new_led.value = led_idx;
-        leds.push_back(new_led);
-    }
-
-    /*-----------------------------------------------------*\
-    | Zone 1: single PWM LED with its own zone modes        |
-    \*-----------------------------------------------------*/
-    if(pwm_present)
+    if(variant == ITE82901_VARIANT_PWM)
     {
         zone pwm_zone;
         pwm_zone.name       = "PWM LED";
@@ -319,24 +289,33 @@ void RGBController_ITE82901::SetupZones()
         pwm_led.value       = 0;
         leds.push_back(pwm_led);
 
-        /*-------------------------------------------------*\
-        | Per-zone modes: the strip zone can follow the     |
-        | device mode or use its own effect; the PWM zone   |
-        | starts on its own Static mode                     |
-        \*-------------------------------------------------*/
-        AddStripModes(zones[ITE82901_ZONE_STRIP].modes, false);
-        zones[ITE82901_ZONE_STRIP].active_mode = -1;
+        SetupColors();
+        return;
+    }
 
-        AddPwmModes(zones[ITE82901_ZONE_PWM].modes);
-        zones[ITE82901_ZONE_PWM].active_mode = FindModeIndex(zones[ITE82901_ZONE_PWM].modes, ITE82901_UI_STATIC);
+    unsigned int led_count = (unsigned int)controller->GetStripLedCount();
+
+    zone strip_zone;
+    strip_zone.name       = "Strip 0";
+    strip_zone.type       = ZONE_TYPE_LINEAR;
+    strip_zone.leds_min   = led_count;
+    strip_zone.leds_max   = led_count;
+    strip_zone.leds_count = led_count;
+    zones.push_back(strip_zone);
+
+    for(unsigned int led_idx = 0; led_idx < led_count; led_idx++)
+    {
+        led new_led;
+        new_led.name  = "Strip 0 LED " + std::to_string(led_idx + 1);
+        new_led.value = led_idx;
+        leds.push_back(new_led);
     }
 
     SetupColors();
 }
 
 /*---------------------------------------------------------*\
-| Direct mode: send the strip zone LEDs as R, G, B bytes    |
-| (the PWM LED has no Direct control)                       |
+| Direct mode: send every LED as R, G, B bytes (strip RGB)  |
 \*---------------------------------------------------------*/
 void RGBController_ITE82901::DeviceUpdateLEDs()
 {
@@ -345,18 +324,16 @@ void RGBController_ITE82901::DeviceUpdateLEDs()
         return;
     }
 
-    unsigned int strip_leds = zones[ITE82901_ZONE_STRIP].leds_count;
+    std::vector<unsigned char> rgb(colors.size() * 3);
 
-    std::vector<unsigned char> rgb(strip_leds * 3);
-
-    for(unsigned int i = 0; (i < strip_leds) && (i < colors.size()); i++)
+    for(std::size_t i = 0; i < colors.size(); i++)
     {
         rgb[(i * 3) + 0] = RGBGetRValue(colors[i]);
         rgb[(i * 3) + 1] = RGBGetGValue(colors[i]);
         rgb[(i * 3) + 2] = RGBGetBValue(colors[i]);
     }
 
-    controller->SetStripColors(rgb.data(), (int)strip_leds);
+    controller->SetStripColors(rgb.data(), (int)colors.size());
 }
 
 void RGBController_ITE82901::DeviceUpdateZoneLEDs(int /*zone*/)
@@ -370,13 +347,14 @@ void RGBController_ITE82901::DeviceUpdateSingleLED(int /*led*/)
 }
 
 /*---------------------------------------------------------*\
-| Device mode changed ("Entire Device")                     |
+| Build gLedParameter for the active mode                   |
+|   Timing values follow the IT8297 parameter document and  |
+|   the ranges used by OpenRGB's Gigabyte IT8297 driver     |
 \*---------------------------------------------------------*/
 void RGBController_ITE82901::DeviceUpdateMode()
 {
     /*-----------------------------------------------------*\
-    | Direct: enable per-LED control of the strip, then     |
-    | push the colors. The PWM LED keeps its own effect.    |
+    | Direct: enable per-LED control, then push the colors  |
     \*-----------------------------------------------------*/
     if(modes[active_mode].value == ITE82901_UI_DIRECT)
     {
@@ -388,116 +366,7 @@ void RGBController_ITE82901::DeviceUpdateMode()
         return;
     }
 
-    /*-----------------------------------------------------*\
-    | Hardware effect: always refresh the strip (it leaves  |
-    | Direct if needed); refresh the PWM LED only when it   |
-    | follows the device mode                               |
-    \*-----------------------------------------------------*/
-    ApplyZone(ITE82901_ZONE_STRIP);
-
-    if(pwm_present && (zones[ITE82901_ZONE_PWM].active_mode < 0))
-    {
-        ApplyZone(ITE82901_ZONE_PWM);
-    }
-}
-
-/*---------------------------------------------------------*\
-| Zone mode changed (zone selected in the Zone menu)        |
-\*---------------------------------------------------------*/
-void RGBController_ITE82901::DeviceUpdateZoneMode(int zone)
-{
-    /*-----------------------------------------------------*\
-    | While the device is in Direct, Direct owns the strip  |
-    | (same behavior as other per-zone drivers)             |
-    \*-----------------------------------------------------*/
-    if((zone == ITE82901_ZONE_STRIP) && (modes[active_mode].value == ITE82901_UI_DIRECT))
-    {
-        return;
-    }
-
-    ApplyZone(zone);
-}
-
-/*---------------------------------------------------------*\
-| Mode in effect for a zone: its own zone mode, or the      |
-| device mode when set to "Follow Device Mode" (-1)         |
-\*---------------------------------------------------------*/
-const mode* RGBController_ITE82901::EffectiveZoneMode(int zone)
-{
-    if((zone >= 0) && (zone < (int)zones.size()))
-    {
-        int zone_mode = zones[zone].active_mode;
-
-        if((zone_mode >= 0) && (zone_mode < (int)zones[zone].modes.size()))
-        {
-            return(&zones[zone].modes[zone_mode]);
-        }
-    }
-
-    if((active_mode >= 0) && (active_mode < (int)modes.size()))
-    {
-        return(&modes[active_mode]);
-    }
-
-    return(NULL);
-}
-
-/*---------------------------------------------------------*\
-| Send the effective mode of one zone to its parameter      |
-|   strip : gLedParameter[strip_slot] (0x20), leaves Direct |
-|   PWM   : gLedParameter[pwm_slot]   (0x21), never Direct  |
-\*---------------------------------------------------------*/
-void RGBController_ITE82901::ApplyZone(int zone)
-{
-    const mode* m = EffectiveZoneMode(zone);
-
-    if(m == NULL || m->value == ITE82901_UI_DIRECT)
-    {
-        return;
-    }
-
-    if(zone == ITE82901_ZONE_PWM)
-    {
-        if(!pwm_present)
-        {
-            return;
-        }
-
-        /*-------------------------------------------------*\
-        | Following a device mode the PWM LED cannot do:    |
-        | keep its current effect                           |
-        \*-------------------------------------------------*/
-        if((zones[ITE82901_ZONE_PWM].active_mode < 0) && !PwmSupports(m->value))
-        {
-            LOG_VERBOSE("[ITE82901] PWM LED cannot follow device mode \"%s\", unchanged", m->name.c_str());
-            return;
-        }
-    }
-
-    ite82901_led_parameter p;
-
-    if(!BuildParameter(*m, &p))
-    {
-        return;
-    }
-
-    if(zone == ITE82901_ZONE_PWM)
-    {
-        controller->SetLedParameter(pwm_slot, pwm_mask, false, &p);
-    }
-    else
-    {
-        controller->SetLedParameter(strip_slot, strip_mask, true, &p);
-    }
-}
-
-/*---------------------------------------------------------*\
-| Build gLedParameter for a mode                            |
-|   Timing values follow the IT8297 parameter document and  |
-|   the ranges used by OpenRGB's Gigabyte IT8297 driver     |
-\*---------------------------------------------------------*/
-bool RGBController_ITE82901::BuildParameter(const mode& m, ite82901_led_parameter* out)
-{
+    const mode&             m      = modes[active_mode];
     ite82901_led_parameter  p;
     bool                    random = (m.color_mode == MODE_COLORS_RANDOM);
 
@@ -622,11 +491,10 @@ bool RGBController_ITE82901::BuildParameter(const mode& m, ite82901_led_paramete
             break;
 
         default:
-            return(false);
+            return;
     }
 
-    *out = p;
-    return(true);
+    controller->SetLedParameter(param_slot, led_zone_mask, (variant == ITE82901_VARIANT_STRIP), &p);
 }
 
 void RGBController_ITE82901::DeviceSaveMode()
@@ -635,64 +503,20 @@ void RGBController_ITE82901::DeviceSaveMode()
 }
 
 /*---------------------------------------------------------*\
-| Read both parameters back (0x20 strip, 0x21 PWM) and set  |
-| the UI: strip -> device mode, PWM -> PWM zone mode.       |
-| Nothing is written to the LEDs here.                      |
+| Read gLedParameter back (cmd 0x20) and set the UI to the  |
+| matching mode, colors, speed and brightness. Nothing is   |
+| written to the LEDs here.                                 |
 \*---------------------------------------------------------*/
 void RGBController_ITE82901::LoadModeFromDevice()
 {
     ite82901_led_parameter p;
 
-    if(controller->ReadLedParameter(strip_slot, &p))
+    if(!controller->ReadLedParameter(param_slot, &p))
     {
-        int idx = ApplyParameterToModes(p, modes);
-
-        if(idx >= 0)
-        {
-            active_mode = idx;
-            LOG_INFO("[ITE82901] LED Strip: stored effect bMode_Sel %d -> \"%s\"", p.mode, modes[idx].name.c_str());
-        }
-        else
-        {
-            LOG_INFO("[ITE82901] LED Strip: stored bMode_Sel %d has no matching OpenRGB mode, UI starts on Static", p.mode);
-        }
-    }
-    else
-    {
-        LOG_INFO("[ITE82901] LED Strip: could not read the stored effect, UI starts on Static");
-    }
-
-    if(!pwm_present)
-    {
+        LOG_INFO("[ITE82901] %s: could not read the stored effect, UI starts on Static", name.c_str());
         return;
     }
 
-    if(controller->ReadLedParameter(pwm_slot, &p))
-    {
-        int idx = ApplyParameterToModes(p, zones[ITE82901_ZONE_PWM].modes);
-
-        if(idx >= 0)
-        {
-            zones[ITE82901_ZONE_PWM].active_mode = idx;
-            LOG_INFO("[ITE82901] PWM LED: stored effect bMode_Sel %d -> \"%s\"", p.mode, zones[ITE82901_ZONE_PWM].modes[idx].name.c_str());
-        }
-        else
-        {
-            LOG_INFO("[ITE82901] PWM LED: stored bMode_Sel %d has no matching OpenRGB mode, UI starts on Static", p.mode);
-        }
-    }
-    else
-    {
-        LOG_INFO("[ITE82901] PWM LED: could not read the stored effect, UI starts on Static");
-    }
-}
-
-/*---------------------------------------------------------*\
-| Map a read-back gLedParameter onto a mode list (colors,   |
-| speed, brightness, random). Returns the mode index or -1. |
-\*---------------------------------------------------------*/
-int RGBController_ITE82901::ApplyParameterToModes(const ite82901_led_parameter& p, std::vector<mode>& list)
-{
     int          ui_mode = -1;
     unsigned int speed   = ITE82901_SPEED_DEFAULT;
     bool         random  = (p.ctrl_value[0] == ITE82901_ALL_PATTERN_COLORS);
@@ -751,23 +575,23 @@ int RGBController_ITE82901::ApplyParameterToModes(const ite82901_led_parameter& 
             break;
     }
 
-
     /*-----------------------------------------------------*\
-    | A list without "Off" (PWM LED) shows Off as Static    |
+    | The PWM LED has no "Off" mode; show it as Static      |
     \*-----------------------------------------------------*/
-    if(ui_mode == ITE82901_UI_OFF && FindModeIndex(list, ITE82901_UI_OFF) < 0)
+    if(ui_mode == ITE82901_UI_OFF && FindModeIndex(ITE82901_UI_OFF) < 0)
     {
         ui_mode = ITE82901_UI_STATIC;
     }
 
-    int mode_idx = (ui_mode < 0) ? -1 : FindModeIndex(list, ui_mode);
+    int mode_idx = (ui_mode < 0) ? -1 : FindModeIndex(ui_mode);
 
     if(mode_idx < 0)
     {
-        return(-1);
+        LOG_INFO("[ITE82901] %s: stored bMode_Sel %d has no matching OpenRGB mode, UI starts on Static", name.c_str(), p.mode);
+        return;
     }
 
-    mode& m = list[mode_idx];
+    mode& m = modes[mode_idx];
 
     if(m.flags & MODE_FLAG_HAS_SPEED)
     {
@@ -794,5 +618,8 @@ int RGBController_ITE82901::ApplyParameterToModes(const ite82901_led_parameter& 
         m.color_mode = MODE_COLORS_RANDOM;
     }
 
-    return(mode_idx);
+    active_mode = mode_idx;
+
+    LOG_INFO("[ITE82901] %s: stored effect bMode_Sel %d -> \"%s\" (speed %u, brightness %u%%)",
+             name.c_str(), p.mode, m.name.c_str(), m.speed, m.brightness);
 }
