@@ -15,13 +15,22 @@
 #include "RGBController_HIDLampArray.h"
 #include <vector>
 #include <hidapi.h>
+#include "LogManager.h"
 
 DetectedControllers DetectHIDLampArrayControllers(hid_device_info* info, const std::string& /*name*/)
 {
     DetectedControllers detected_controllers;
     hid_device*         dev;
 
+    LOG_INFO("[HID LampArray DIAG] Candidate %04X:%04X usage page 0x%04X usage 0x%04X interface %d: %s",
+             info->vendor_id, info->product_id, info->usage_page, info->usage, info->interface_number, info->path);
+
     dev = hid_open_path(info->path);
+
+    if(!dev)
+    {
+        LOG_WARNING("[HID LampArray DIAG] hid_open_path failed for %04X:%04X", info->vendor_id, info->product_id);
+    }
 
     if(dev)
     {
@@ -40,6 +49,7 @@ DetectedControllers DetectHIDLampArrayControllers(hid_device_info* info, const s
         }
         else
         {
+            LOG_WARNING("[HID LampArray DIAG] %04X:%04X has 0 lamps, not registered", info->vendor_id, info->product_id);
             delete controller;
         }
     }

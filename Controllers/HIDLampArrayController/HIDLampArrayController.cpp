@@ -61,6 +61,25 @@ HIDLampArrayController::HIDLampArrayController(hid_device *dev_handle, const cha
     | A failed descriptor read returns -1; treated as a     |
     | length it walks off the end of the buffer.            |
     \*-----------------------------------------------------*/
+    LOG_INFO("[HID LampArray DIAG] Report descriptor size: %d", size);
+
+    /*-----------------------------------------------------*\
+    | DIAG: dump the descriptor exactly as hidapi returns   |
+    | it (on Windows it is reconstructed by hidapi)         |
+    \*-----------------------------------------------------*/
+    for(int line_start = 0; line_start < size; line_start += 32)
+    {
+        char line[32 * 3 + 1];
+        int  line_pos = 0;
+
+        for(int i = line_start; (i < size) && (i < line_start + 32); i++)
+        {
+            line_pos += snprintf(&line[line_pos], sizeof(line) - line_pos, "%02X ", report_descriptor[i]);
+        }
+
+        LOG_INFO("[HID LampArray DIAG] Desc %04X: %s", line_start, line);
+    }
+
     if(size < 0)
     {
         LampArray.LampCount     = 0;
@@ -199,8 +218,13 @@ HIDLampArrayController::HIDLampArrayController(hid_device *dev_handle, const cha
                                        || (ids.LampRangeUpdateReportID == 0)
                                        || (ids.LampArrayControlReportID == 0);
 
+    LOG_INFO("[HID LampArray DIAG] Report IDs: Attributes=%d Request=%d Response=%d MultiUpdate=%d RangeUpdate=%d Control=%d, feature length=%u",
+             ids.LampArrayAttributesReportID, ids.LampAttributesRequestReportID, ids.LampAttributesResponseReportID,
+             ids.LampMultiUpdateReportID, ids.LampRangeUpdateReportID, ids.LampArrayControlReportID, feature_report_length);
+
     if(report_missing)
     {
+        LOG_WARNING("[HID LampArray DIAG] At least one LampArray report ID is missing (0 above), device ignored");
         LampArray.LampCount = 0;
         LampArray.LampArrayKind = HID_LAMPARRAY_KIND_UNDEFINED;
         return;
@@ -214,6 +238,8 @@ HIDLampArrayController::HIDLampArrayController(hid_device *dev_handle, const cha
     /*-----------------------------------------------------*\
     | Set LampAttributesRequestReport for LampId 0          |
     \*-----------------------------------------------------*/
+    LOG_INFO("[HID LampArray DIAG] LampArrayAttributes: LampCount=%u Kind=%u", (unsigned int)LampArray.LampCount, (unsigned int)LampArray.LampArrayKind);
+
     SetLampAttributesRequestReport(0);
 
     /*-----------------------------------------------------*\
