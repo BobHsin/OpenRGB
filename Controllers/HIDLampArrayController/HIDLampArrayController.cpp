@@ -239,7 +239,7 @@ std::vector<LampAttributes> HIDLampArrayController::GetLamps()
 
 void HIDLampArrayController::GetLampArrayAttributesReport()
 {
-    unsigned char   usb_buf[sizeof(LampArrayAttributes) + 1];
+    unsigned char   usb_buf[256];
 
     memset(usb_buf, 0, sizeof(usb_buf));
 
@@ -258,7 +258,7 @@ void HIDLampArrayController::GetLampArrayAttributesReport()
 
 void HIDLampArrayController::GetLampAttributesResponseReport()
 {
-    unsigned char   usb_buf[65];
+    unsigned char   usb_buf[256];
     LampAttributes  attributes;
 
     memset(usb_buf, 0, sizeof(usb_buf));
