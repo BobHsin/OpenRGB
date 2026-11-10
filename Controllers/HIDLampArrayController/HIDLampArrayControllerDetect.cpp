@@ -58,3 +58,4 @@ DetectedControllers DetectHIDLampArrayControllers(hid_device_info* info, const s
 }
 
 REGISTER_HID_DETECTOR_PU_ONLY("HID LampArray Device", DetectHIDLampArrayControllers, 0x59, 0x01);
+REGISTER_HID_DETECTOR_P("ITE 82901 LampArray Device", DetectHIDLampArrayControllers, 0xFF82, 0x97);
